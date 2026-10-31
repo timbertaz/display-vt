@@ -1,0 +1,18 @@
+# --- AgIsoStack++ needs ---
+# Larger than the library example (8192): the VT server parses the object pool in its own thread
+CONFIG_PTHREAD_TASK_STACK_SIZE_DEFAULT=16384
+CONFIG_FREERTOS_HZ=250
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
+# --- Waveshare ESP32-S3-Touch-LCD-7: ESP32-S3N16R8 ---
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
+
+# 8 MB octal PSRAM, used automatically by malloc/new for large blocks (the object pool lives here)
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_USE_MALLOC=y
+
+# Logs go to UART0 = the USB-to-UART Type-C port (native USB pins are used for CAN)
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
