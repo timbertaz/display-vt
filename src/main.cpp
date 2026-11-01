@@ -6,6 +6,8 @@
 // ISOBUS activation messages back to the implement.
 //
 // The screen has three tabs (ui.cpp): Lights, ISOBUS (the implement's screens) and Camera.
+// The lights are switched by a Modbus relay board on the RS485 port (relay_board.cpp):
+//   relay 1 = front work lights, relay 2 = rear work lights, relay 3 = beacon
 //
 // Threading: the CAN stack, the VT server and all drawing decisions run in this main
 // task, so the object pool is never changed while it is being drawn. LVGL itself runs
@@ -21,6 +23,7 @@
 #include "isobus/isobus/isobus_virtual_terminal_server.hpp"
 
 #include "board.hpp"
+#include "relay_board.hpp"
 #include "console_logger.cpp"
 #include "driver/gpio.h"
 #include "driver/twai.h"
@@ -319,6 +322,14 @@ static void send_key_event(BenchVT &vt, const VtRenderer::KeyEvent &event)
 	         codeNames[static_cast<int>(event.code) & 3], sent ? "" : " (SEND FAILED)");
 }
 
+static relay::RelayBoard relays;
+
+// Which relay on the board drives which light
+static std::uint8_t relay_for(ui::Light light)
+{
+	return static_cast<std::uint8_t>(light) + 1; // Front = relay 1, Rear = relay 2, Beacon = relay 3
+}
+
 // Bus health for the dot at the bottom of the tab rail
 static void update_can_status(ui::Ui &screenUi)
 {
@@ -352,17 +363,20 @@ extern "C" void app_main()
 		ESP_LOGE(TAG, "Display init FAILED - continuing without screen");
 	}
 
+	relays.start(); // RS485 relay board for the lights
+
 	std::unique_ptr<ui::Ui> screenUi;
 	std::unique_ptr<VtRenderer> renderer;
 	if (board::lvgl_lock())
 	{
-		// Light switches: for now the UI just shows the requested state. Later this sends a
-		// command to the lights module over CAN and shows the state it reports back.
-		screenUi.reset(new ui::Ui(lv_scr_act(), [&screenUi](ui::Light light, bool wantOn) {
+		// Light switches: ask the relay board. The cards change when the board reports the
+		// new state back (see the screen section in the loop), not when the button is pressed.
+		screenUi.reset(new ui::Ui(lv_scr_act(), [](ui::Light light, bool wantOn) {
 			static const char *names[] = { "Front lights", "Rear lights", "Beacon" };
-			ESP_LOGI(TAG, "%s -> %s", names[static_cast<int>(light)], wantOn ? "ON" : "OFF");
-			screenUi->set_light(light, wantOn);
+			ESP_LOGI(TAG, "%s -> %s requested", names[static_cast<int>(light)], wantOn ? "ON" : "OFF");
+			relays.request(relay_for(light), wantOn);
 		}));
+		screenUi->set_lights_online(false);
 
 		renderer.reset(new VtRenderer(screenUi->isobus_page(), [](const VtRenderer::KeyEvent &event) {
 			std::lock_guard<std::mutex> lock(keyEventMutex);
@@ -425,6 +439,8 @@ extern "C" void app_main()
 	std::uint32_t lastServerUpdate = 0;
 	std::uint32_t lastRebuild = 0;
 	bool alarmWasShown = false;
+	int shownRelayStates = -1; // -1 = nothing shown yet
+	bool shownRelaysOnline = false;
 	ui::IsobusState shownIsobusState = ui::IsobusState::NoImplement;
 	bool lazyRebuild = false; // a repaint may also have changed colours/positions; catch up within 1 s
 
@@ -488,6 +504,21 @@ extern "C" void app_main()
 				{
 					renderer->set_waiting_text(vt->status_text().find("loading") != std::string::npos ? "Loading object pool..." : "Waiting for implement...");
 				}
+			}
+
+			// Lights: show what the relay board reports
+			int relayStates = relays.states();
+			bool relaysOnline = relays.online();
+			if ((relayStates != shownRelayStates) || (relaysOnline != shownRelaysOnline))
+			{
+				shownRelayStates = relayStates;
+				shownRelaysOnline = relaysOnline;
+				for (int i = 0; i < static_cast<int>(ui::Light::Count); i++)
+				{
+					auto light = static_cast<ui::Light>(i);
+					screenUi->set_light(light, relaysOnline && (0 != (relayStates & (1 << (relay_for(light) - 1)))));
+				}
+				screenUi->set_lights_online(relaysOnline);
 			}
 
 			// Tab rail: implement status dot. An alarm mask brings the ISOBUS tab to the front.
