@@ -5,6 +5,8 @@
 // keys with LVGL (vt_renderer.cpp). Touching a button or soft key sends the matching
 // ISOBUS activation messages back to the implement.
 //
+// The screen has three tabs (ui.cpp): Lights, ISOBUS (the implement's screens) and Camera.
+//
 // Threading: the CAN stack, the VT server and all drawing decisions run in this main
 // task, so the object pool is never changed while it is being drawn. LVGL itself runs
 // in its own task (board.cpp); we take its lock whenever we touch LVGL objects.
@@ -26,6 +28,7 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "ui.hpp"
 #include "vt_renderer.hpp"
 
 #include <array>
@@ -316,6 +319,28 @@ static void send_key_event(BenchVT &vt, const VtRenderer::KeyEvent &event)
 	         codeNames[static_cast<int>(event.code) & 3], sent ? "" : " (SEND FAILED)");
 }
 
+// Bus health for the dot at the bottom of the tab rail
+static void update_can_status(ui::Ui &screenUi)
+{
+	twai_status_info_t status;
+	if (ESP_OK != twai_get_status_info(&status))
+	{
+		screenUi.set_can_status(false, "CAN ?");
+	}
+	else if (TWAI_STATE_BUS_OFF == status.state)
+	{
+		screenUi.set_can_status(false, "BUS OFF");
+	}
+	else if ((status.tx_error_counter > 96) || (status.rx_error_counter > 96))
+	{
+		screenUi.set_can_status(false, "CAN ERR");
+	}
+	else
+	{
+		screenUi.set_can_status(true, "CAN OK");
+	}
+}
+
 extern "C" void app_main()
 {
 	ESP_LOGI(TAG, "=== Display as ISOBUS Virtual Terminal ===");
@@ -327,10 +352,19 @@ extern "C" void app_main()
 		ESP_LOGE(TAG, "Display init FAILED - continuing without screen");
 	}
 
+	std::unique_ptr<ui::Ui> screenUi;
 	std::unique_ptr<VtRenderer> renderer;
 	if (board::lvgl_lock())
 	{
-		renderer.reset(new VtRenderer(lv_scr_act(), [](const VtRenderer::KeyEvent &event) {
+		// Light switches: for now the UI just shows the requested state. Later this sends a
+		// command to the lights module over CAN and shows the state it reports back.
+		screenUi.reset(new ui::Ui(lv_scr_act(), [&screenUi](ui::Light light, bool wantOn) {
+			static const char *names[] = { "Front lights", "Rear lights", "Beacon" };
+			ESP_LOGI(TAG, "%s -> %s", names[static_cast<int>(light)], wantOn ? "ON" : "OFF");
+			screenUi->set_light(light, wantOn);
+		}));
+
+		renderer.reset(new VtRenderer(screenUi->isobus_page(), [](const VtRenderer::KeyEvent &event) {
 			std::lock_guard<std::mutex> lock(keyEventMutex);
 			keyEvents.push_back(event);
 		}));
@@ -390,6 +424,8 @@ extern "C" void app_main()
 	std::uint32_t lastLog = 0;
 	std::uint32_t lastServerUpdate = 0;
 	std::uint32_t lastRebuild = 0;
+	bool alarmWasShown = false;
+	ui::IsobusState shownIsobusState = ui::IsobusState::NoImplement;
 	bool lazyRebuild = false; // a repaint may also have changed colours/positions; catch up within 1 s
 
 	while (true)
@@ -454,9 +490,29 @@ extern "C" void app_main()
 				}
 			}
 
+			// Tab rail: implement status dot. An alarm mask brings the ISOBUS tab to the front.
+			bool alarmShown = false;
+			if (nullptr != active)
+			{
+				auto maskObject = active->get_object_by_id(mask);
+				alarmShown = (nullptr != maskObject) && (isobus::VirtualTerminalObjectType::AlarmMask == maskObject->get_object_type());
+			}
+			if (alarmShown && !alarmWasShown)
+			{
+				screenUi->show_tab(ui::Tab::Isobus);
+			}
+			alarmWasShown = alarmShown;
+			ui::IsobusState isobusState = alarmShown ? ui::IsobusState::Alarm : ((nullptr != active) ? ui::IsobusState::Connected : ui::IsobusState::NoImplement);
+			if (isobusState != shownIsobusState) // only on change: every style change makes LVGL redraw
+			{
+				shownIsobusState = isobusState;
+				screenUi->set_isobus_state(isobusState);
+			}
+
 			if (now - lastStatus >= 1000)
 			{
 				lastStatus = now;
+				update_can_status(*screenUi);
 				renderer->set_status(vt->status_text());
 				if (nullptr == active)
 				{
