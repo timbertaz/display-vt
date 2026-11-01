@@ -6,3 +6,4 @@
 
 sdkconfig.display
 managed_components/
+__pycache__/

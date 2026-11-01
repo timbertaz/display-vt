@@ -3,10 +3,10 @@
 // Platform independent: only depends on LVGL and AgIsoStack++, so it can also be
 // built and tested on a PC.
 //
-// Screen layout on the 800x480 panel:
+// Layout inside the parent (the ISOBUS page, 704x480):
 //   x   0..479  data/alarm mask (480x480, the size we report to implements)
 //   x 490..549  soft key column (6 keys of 60x60)
-//   x 570..799  status panel
+//   x 570..     status panel
 //
 // Threading: every method must be called with the LVGL lock held. Touch callbacks
 // run inside lv_timer_handler (also under the lock) and only push KeyEvents to the
@@ -45,7 +45,8 @@ public:
 	};
 	using KeyEventHandler = std::function<void(const KeyEvent &)>;
 
-	VtRenderer(lv_obj_t *screen, KeyEventHandler handler);
+	// parent: the container to draw into (its size must already be set)
+	VtRenderer(lv_obj_t *parent, KeyEventHandler handler);
 
 	// Rebuild everything for this working set and mask. Pass nullptr to show the waiting screen.
 	void render(std::shared_ptr<isobus::VirtualTerminalWorkingSetBase> workingSet, std::uint16_t activeMaskId);

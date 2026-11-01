@@ -71,11 +71,12 @@ namespace
 	}
 }
 
-VtRenderer::VtRenderer(lv_obj_t *screenToUse, KeyEventHandler eventHandler) :
-  screen(screenToUse),
+VtRenderer::VtRenderer(lv_obj_t *parentToUse, KeyEventHandler eventHandler) :
+  screen(parentToUse),
   handler(std::move(eventHandler))
 {
-	lv_obj_set_style_bg_color(screen, lv_color_hex(0x202020), 0);
+	lv_obj_update_layout(screen);
+	lv_obj_set_style_bg_color(screen, lv_color_hex(0x1B1B1B), 0);
 	lv_obj_set_style_bg_opa(screen, LV_OPA_COVER, 0);
 	lv_obj_clear_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
 
@@ -84,12 +85,12 @@ VtRenderer::VtRenderer(lv_obj_t *screenToUse, KeyEventHandler eventHandler) :
 	lv_obj_set_style_bg_opa(maskArea, LV_OPA_COVER, 0);
 
 	keyArea = make_box(screen, KEY_X - 5, 0, KEY_SIZE + 10, MASK_SIZE);
-	lv_obj_set_style_bg_color(keyArea, lv_color_hex(0x303030), 0);
+	lv_obj_set_style_bg_color(keyArea, lv_color_hex(0x262626), 0);
 	lv_obj_set_style_bg_opa(keyArea, LV_OPA_COVER, 0);
 
 	statusLabel = lv_label_create(screen);
 	lv_obj_set_pos(statusLabel, STATUS_X, 10);
-	lv_obj_set_width(statusLabel, 800 - STATUS_X - 10);
+	lv_obj_set_width(statusLabel, lv_obj_get_width(screen) - STATUS_X - 8);
 	lv_label_set_long_mode(statusLabel, LV_LABEL_LONG_WRAP);
 	lv_obj_set_style_text_color(statusLabel, lv_color_hex(0xE0E0E0), 0);
 	lv_obj_set_style_text_font(statusLabel, &lv_font_montserrat_14, 0);
@@ -177,7 +178,7 @@ void VtRenderer::render(std::shared_ptr<isobus::VirtualTerminalWorkingSetBase> n
 	heldKey = nullptr;
 
 	lv_obj_set_style_bg_color(maskArea, lv_color_hex(0x000000), 0);
-	lv_obj_set_style_bg_color(keyArea, lv_color_hex(0x303030), 0);
+	lv_obj_set_style_bg_color(keyArea, lv_color_hex(0x262626), 0);
 
 	if (nullptr == workingSet)
 	{
