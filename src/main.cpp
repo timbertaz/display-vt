@@ -1,8 +1,13 @@
-// Waveshare ESP32-S3-Touch-LCD-7 — ISOBUS Virtual Terminal, step 1: protocol only
+// Waveshare ESP32-S3-Touch-LCD-7 — ISOBUS Virtual Terminal
 //
 // The display claims an address as a Virtual Terminal (preferred 0x26), answers the
-// implement's questions, receives its object pool over the transport protocol and
-// parses it. Nothing is drawn yet: we print what arrived to the serial log.
+// implement's questions, receives its object pool, and draws the active mask and soft
+// keys with LVGL (vt_renderer.cpp). Touching a button or soft key sends the matching
+// ISOBUS activation messages back to the implement.
+//
+// Threading: the CAN stack, the VT server and all drawing decisions run in this main
+// task, so the object pool is never changed while it is being drawn. LVGL itself runs
+// in its own task (board.cpp); we take its lock whenever we touch LVGL objects.
 //
 // Modelled on AgIsoVirtualTerminal (Open-Agriculture), which uses the same
 // isobus::VirtualTerminalServer class from AgIsoStack++.
@@ -13,16 +18,20 @@
 #include "isobus/isobus/can_stack_logger.hpp"
 #include "isobus/isobus/isobus_virtual_terminal_server.hpp"
 
+#include "board.hpp"
 #include "console_logger.cpp"
 #include "driver/gpio.h"
-#include "driver/i2c.h"
 #include "driver/twai.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "vt_renderer.hpp"
 
 #include <array>
+#include <atomic>
+#include <cstdio>
+#include <deque>
 #include <iterator>
 #include <map>
 #include <memory>
@@ -31,39 +40,6 @@
 #include <vector>
 
 static const char *TAG = "vt";
-
-// ---------------- Board: CH422G IO expander must switch the CAN pins from USB to CAN ----------------
-#define I2C_PORT          I2C_NUM_0
-#define I2C_SDA           GPIO_NUM_8
-#define I2C_SCL           GPIO_NUM_9
-#define CH422G_MODE_ADDR  0x24
-#define CH422G_OUT_ADDR   0x38
-#define EXIO_TP_RST  (1 << 1)
-#define EXIO_LCD_BL  (1 << 2)
-#define EXIO_SD_CS   (1 << 4)
-#define EXIO_CAN_SEL (1 << 5)   // HIGH = CAN mode
-
-static bool ch422g_write(std::uint8_t addr, std::uint8_t value)
-{
-	return ESP_OK == i2c_master_write_to_device(I2C_PORT, addr, &value, 1, pdMS_TO_TICKS(100));
-}
-
-static void enable_can_mode()
-{
-	i2c_config_t conf = {};
-	conf.mode = I2C_MODE_MASTER;
-	conf.sda_io_num = I2C_SDA;
-	conf.scl_io_num = I2C_SCL;
-	conf.sda_pullup_en = GPIO_PULLUP_ENABLE;
-	conf.scl_pullup_en = GPIO_PULLUP_ENABLE;
-	conf.master.clk_speed = 100000;
-	i2c_param_config(I2C_PORT, &conf);
-	i2c_driver_install(I2C_PORT, conf.mode, 0, 0, 0);
-
-	bool ok1 = ch422g_write(CH422G_MODE_ADDR, 0x01);
-	bool ok2 = ch422g_write(CH422G_OUT_ADDR, EXIO_TP_RST | EXIO_LCD_BL | EXIO_SD_CS | EXIO_CAN_SEL);
-	ESP_LOGI(TAG, "CH422G: mode %s, outputs %s -> CAN mode selected", ok1 ? "OK" : "FAIL", ok2 ? "OK" : "FAIL");
-}
 
 // ---------------- Helpers for readable logs ----------------
 static const char *object_type_name(std::uint8_t t)
@@ -100,6 +76,40 @@ public:
 
 	// update() is protected in the base class; call this cyclically
 	void tick() { update(); }
+
+	std::uint16_t active_mask_id() const { return activeWorkingSetDataMaskObjectID; }
+
+	// True for a moment after a new pool was parsed, so the screen can be rebuilt
+	std::atomic<bool> poolChanged{ false };
+
+	// Text for the status panel on the right of the screen
+	std::string status_text() const
+	{
+		char text[200];
+		auto cf = get_internal_control_function();
+		auto active = get_active_working_set();
+		int len = std::snprintf(text, sizeof(text), "ISOBUS VT\n\nAddress: %s\n",
+		                        cf->get_address_valid() ? "" : "claiming...");
+		if (cf->get_address_valid())
+		{
+			len = std::snprintf(text, sizeof(text), "ISOBUS VT\n\nAddress: 0x%02X\n", cf->get_address());
+		}
+
+		if (nullptr != active)
+		{
+			std::snprintf(text + len, sizeof(text) - len, "Implement: 0x%02X\nMask: %u",
+			              active->get_control_function()->get_address(), static_cast<unsigned>(activeWorkingSetDataMaskObjectID));
+		}
+		else if (!managedWorkingSetList.empty())
+		{
+			std::snprintf(text + len, sizeof(text) - len, "Implement found,\nloading screens...");
+		}
+		else
+		{
+			std::snprintf(text + len, sizeof(text) - len, "No implement");
+		}
+		return text;
+	}
 
 	void print_status()
 	{
@@ -268,6 +278,7 @@ public:
 		{
 			ESP_LOGI(TAG, "   %2u x %s", c.second, object_type_name(c.first));
 		}
+		poolChanged = true;
 	}
 
 private:
@@ -280,13 +291,53 @@ static twai_general_config_t twaiConfig = TWAI_GENERAL_CONFIG_DEFAULT(GPIO_NUM_2
 static twai_timing_config_t twaiTiming = TWAI_TIMING_CONFIG_250KBITS();
 static twai_filter_config_t twaiFilter = TWAI_FILTER_CONFIG_ACCEPT_ALL();
 
+// Touches are queued by the LVGL task and sent from the main task, which owns the CAN stack
+static std::mutex keyEventMutex;
+static std::deque<VtRenderer::KeyEvent> keyEvents;
+
+// Set by the VT server's events (they run in the main task, from CANHardwareInterface::update)
+static std::atomic<bool> repaintNeeded{ false };
+static std::atomic<bool> rebuildNeeded{ false };
+
+static void send_key_event(BenchVT &vt, const VtRenderer::KeyEvent &event)
+{
+	auto ws = vt.get_active_working_set();
+	if (nullptr == ws)
+	{
+		return;
+	}
+	auto destination = ws->get_control_function();
+	bool sent = event.isSoftKey ?
+	  vt.send_soft_key_activation_message(event.code, event.objectId, event.parentMaskId, event.keyCode, destination) :
+	  vt.send_button_activation_message(event.code, event.objectId, event.parentMaskId, event.keyCode, destination);
+
+	static const char *codeNames[] = { "released", "pressed", "held", "aborted" };
+	ESP_LOGI(TAG, "%s %u %s%s", event.isSoftKey ? "Soft key" : "Button", event.objectId,
+	         codeNames[static_cast<int>(event.code) & 3], sent ? "" : " (SEND FAILED)");
+}
+
 extern "C" void app_main()
 {
-	ESP_LOGI(TAG, "=== Display as ISOBUS Virtual Terminal (step 1: protocol only) ===");
+	ESP_LOGI(TAG, "=== Display as ISOBUS Virtual Terminal ===");
 	ESP_LOGI(TAG, "PSRAM: %u KB free", static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024));
 
-	enable_can_mode();
-	vTaskDelay(pdMS_TO_TICKS(50));
+	// Screen, touch, backlight and CAN-mode switch
+	if (!board::init())
+	{
+		ESP_LOGE(TAG, "Display init FAILED - continuing without screen");
+	}
+
+	std::unique_ptr<VtRenderer> renderer;
+	if (board::lvgl_lock())
+	{
+		renderer.reset(new VtRenderer(lv_scr_act(), [](const VtRenderer::KeyEvent &event) {
+			std::lock_guard<std::mutex> lock(keyEventMutex);
+			keyEvents.push_back(event);
+		}));
+		renderer->set_status("ISOBUS VT\n\nStarting...");
+		renderer->render(nullptr, isobus::NULL_OBJECT_ID);
+		board::lvgl_unlock();
+	}
 
 	// ---- CAN via the ESP32's built-in controller (TWAI), 250 kbit/s ----
 	twaiConfig.rx_queue_len = 64; // object pool transfers arrive in fast bursts
@@ -295,10 +346,13 @@ extern "C" void app_main()
 
 	isobus::CANStackLogger::set_can_stack_logger_sink(&logger);
 	isobus::CANStackLogger::set_log_level(isobus::CANStackLogger::LoggingLevel::Info);
-	isobus::CANHardwareInterface::set_number_of_can_channels(1);
+	// Room for ~400 frames: drawing can pause the CAN update for a few tens of ms during a pool transfer
+	isobus::CANHardwareInterface::set_number_of_can_channels(1, 400);
 	isobus::CANHardwareInterface::assign_can_channel_frame_handler(0, canDriver);
 
-	if (!isobus::CANHardwareInterface::start() || !canDriver->get_is_valid())
+	// start(false): no separate stack thread. We call CANHardwareInterface::update() ourselves
+	// below, so every VT server callback runs in this task, never while we draw.
+	if (!isobus::CANHardwareInterface::start(false) || !canDriver->get_is_valid())
 	{
 		ESP_LOGE(TAG, "CAN start FAILED");
 	}
@@ -320,22 +374,103 @@ extern "C" void app_main()
 	vt->get_language_command_interface().initialize();
 	vt->initialize();
 
+	vt->get_on_repaint_event_dispatcher().add_listener(
+	  [](std::shared_ptr<isobus::VirtualTerminalServerManagedWorkingSet>) { repaintNeeded = true; });
 	vt->get_on_change_active_mask_event_dispatcher().add_listener(
 	  [](std::shared_ptr<isobus::VirtualTerminalServerManagedWorkingSet>, std::uint16_t workingSetId, std::uint16_t maskId) {
 		  ESP_LOGI(TAG, "Implement switched mask: working set %u -> mask %u", workingSetId, maskId);
+		  rebuildNeeded = true;
 	  });
+	vt->get_on_change_active_softkey_mask_event_dispatcher().add_listener(
+	  [](std::shared_ptr<isobus::VirtualTerminalServerManagedWorkingSet>, std::uint16_t, std::uint16_t) { rebuildNeeded = true; });
 
+	std::shared_ptr<isobus::VirtualTerminalServerManagedWorkingSet> shownWorkingSet;
+	std::uint16_t shownMask = isobus::NULL_OBJECT_ID;
 	std::uint32_t lastStatus = 0;
+	std::uint32_t lastLog = 0;
+	std::uint32_t lastServerUpdate = 0;
+	std::uint32_t lastRebuild = 0;
+	bool lazyRebuild = false; // a repaint may also have changed colours/positions; catch up within 1 s
+
 	while (true)
 	{
-		vt->tick();
+		// 1. CAN: receive, run the stack (VT server callbacks happen here), transmit
+		isobus::CANHardwareInterface::update();
 
 		std::uint32_t now = xTaskGetTickCount() * portTICK_PERIOD_MS;
-		if (now - lastStatus >= 3000)
+		if (now - lastServerUpdate >= 20)
 		{
-			lastStatus = now;
+			lastServerUpdate = now;
+			vt->tick();
+		}
+
+		// 2. Touches -> ISOBUS button / soft key messages
+		std::deque<VtRenderer::KeyEvent> pending;
+		{
+			std::lock_guard<std::mutex> lock(keyEventMutex);
+			pending.swap(keyEvents);
+		}
+		for (const auto &event : pending)
+		{
+			send_key_event(*vt, event);
+		}
+
+		// 3. Screen
+		// Only wait briefly for LVGL: if it is busy drawing, skip the screen this round and keep CAN running
+		if ((nullptr != renderer) && board::lvgl_lock(5))
+		{
+			auto active = vt->get_active_working_set();
+			std::uint16_t mask = vt->active_mask_id();
+			bool poolChanged = vt->poolChanged.exchange(false);
+
+			if (poolChanged)
+			{
+				renderer->clear_image_cache(); // pictures may have changed
+			}
+
+			if (repaintNeeded.exchange(false))
+			{
+				// The implement changed something. Numbers and strings update right away (cheap);
+				// anything else (colours, hidden containers, positions) is caught by a rebuild within 1 s.
+				renderer->refresh_values();
+				lazyRebuild = true;
+			}
+
+			bool structureChanged = (active != shownWorkingSet) || (mask != shownMask) || poolChanged || rebuildNeeded ||
+			  (lazyRebuild && (now - lastRebuild >= 1000));
+
+			if (structureChanged && !renderer->is_key_held())
+			{
+				// Full rebuild; waits while a key is held so the implement always gets the release
+				rebuildNeeded = false;
+				lazyRebuild = false;
+				lastRebuild = now;
+				shownWorkingSet = active;
+				shownMask = mask;
+				renderer->render(active, mask);
+				if (nullptr == active)
+				{
+					renderer->set_waiting_text(vt->status_text().find("loading") != std::string::npos ? "Loading object pool..." : "Waiting for implement...");
+				}
+			}
+
+			if (now - lastStatus >= 1000)
+			{
+				lastStatus = now;
+				renderer->set_status(vt->status_text());
+				if (nullptr == active)
+				{
+					renderer->set_waiting_text(vt->status_text().find("loading") != std::string::npos ? "Loading object pool..." : "Waiting for implement...");
+				}
+			}
+			board::lvgl_unlock();
+		}
+
+		if (now - lastLog >= 3000)
+		{
+			lastLog = now;
 			vt->print_status();
 		}
-		vTaskDelay(pdMS_TO_TICKS(20));
+		vTaskDelay(1);
 	}
 }

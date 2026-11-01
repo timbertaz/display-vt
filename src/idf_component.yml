@@ -1,0 +1,8 @@
+# ESP-IDF component manager: PlatformIO downloads these on the first build.
+dependencies:
+  idf:
+    version: ">=5.1.0"
+  # LVGL 8.3, same major version as Waveshare's ESP-IDF example for this board.
+  # Configured through sdkconfig.defaults (CONFIG_LV_*).
+  lvgl/lvgl:
+    version: "~8.3.11"

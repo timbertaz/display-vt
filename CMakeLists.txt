@@ -1,3 +1,15 @@
 cmake_minimum_required(VERSION 3.16.0)
+add_compile_options("-Wno-attributes")
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(TestAgIsoStack)
+
+# LVGL has a few printf-format warnings that ESP-IDF would otherwise treat as errors
+idf_build_get_property(build_components BUILD_COMPONENTS)
+if("lvgl" IN_LIST build_components)
+    idf_component_get_property(lvgl_lib lvgl COMPONENT_LIB)
+elseif("lvgl__lvgl" IN_LIST build_components)
+    idf_component_get_property(lvgl_lib lvgl__lvgl COMPONENT_LIB)
+endif()
+if(lvgl_lib)
+    target_compile_options(${lvgl_lib} PRIVATE -Wno-format)
+endif()
