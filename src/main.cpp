@@ -8,6 +8,7 @@
 // The screen has three tabs (ui.cpp): Lights, ISOBUS (the implement's screens) and Camera.
 // The lights are switched by a Modbus relay board on the RS485 port (relay_board.cpp):
 //   relay 1 = front work lights, relay 2 = rear work lights, relay 3 = beacon
+// Speed comes from a GY-GPS6MV2 (NEO-6M) on the sensor header: GPS TX -> GPIO6 (gps.cpp).
 //
 // Threading: the CAN stack, the VT server and all drawing decisions run in this main
 // task, so the object pool is never changed while it is being drawn. LVGL itself runs
@@ -23,6 +24,7 @@
 #include "isobus/isobus/isobus_virtual_terminal_server.hpp"
 
 #include "board.hpp"
+#include "gps.hpp"
 #include "relay_board.hpp"
 #include "console_logger.cpp"
 #include "driver/gpio.h"
@@ -323,6 +325,7 @@ static void send_key_event(BenchVT &vt, const VtRenderer::KeyEvent &event)
 }
 
 static relay::RelayBoard relays;
+static gps::Gps gpsReceiver;
 
 // Which relay on the board drives which light
 static std::uint8_t relay_for(ui::Light light)
@@ -363,7 +366,8 @@ extern "C" void app_main()
 		ESP_LOGE(TAG, "Display init FAILED - continuing without screen");
 	}
 
-	relays.start(); // RS485 relay board for the lights
+	relays.start();      // RS485 relay board for the lights
+	gpsReceiver.start(); // GPS on the sensor header, for speed
 
 	std::unique_ptr<ui::Ui> screenUi;
 	std::unique_ptr<VtRenderer> renderer;
@@ -439,6 +443,8 @@ extern "C" void app_main()
 	std::uint32_t lastServerUpdate = 0;
 	std::uint32_t lastRebuild = 0;
 	bool alarmWasShown = false;
+	std::uint32_t lastSpeedUpdate = 0;
+	int shownSpeedKey = -1;
 	int shownRelayStates = -1; // -1 = nothing shown yet
 	bool shownRelaysOnline = false;
 	ui::IsobusState shownIsobusState = ui::IsobusState::NoImplement;
@@ -538,6 +544,19 @@ extern "C" void app_main()
 			{
 				shownIsobusState = isobusState;
 				screenUi->set_isobus_state(isobusState);
+			}
+
+			// Speed in the tab rail, 4 times per second (only redrawn when it changes)
+			if (now - lastSpeedUpdate >= 250)
+			{
+				lastSpeedUpdate = now;
+				gps::Reading reading = gpsReceiver.read();
+				int speedKey = reading.connected ? (reading.fix ? 2000000 + static_cast<int>(reading.speedKmh * 10.0f) * 100 + reading.satellites : 1) : 0;
+				if (speedKey != shownSpeedKey)
+				{
+					shownSpeedKey = speedKey;
+					screenUi->set_speed(reading.connected, reading.fix, reading.speedKmh, reading.satellites);
+				}
 			}
 
 			if (now - lastStatus >= 1000)
