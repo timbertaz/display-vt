@@ -336,14 +336,38 @@ static std::uint8_t relay_for(ui::Light light)
 // Bus health for the dot at the bottom of the tab rail
 static void update_can_status(ui::Ui &screenUi)
 {
+	static bool canRecovering = false;
 	twai_status_info_t status;
-	if (ESP_OK != twai_get_status_info(&status))
+	esp_err_t error = twai_get_status_info(&status);
+	if (ESP_OK == error)
+	{
+		if (TWAI_STATE_BUS_OFF == status.state)
+		{
+			canRecovering = true;
+		}
+		else if (TWAI_STATE_RUNNING == status.state)
+		{
+			canRecovering = false;
+		}
+	}
+	if (ESP_OK != error)
 	{
 		screenUi.set_can_status(false, "CAN ?");
 	}
 	else if (TWAI_STATE_BUS_OFF == status.state)
 	{
+		// Too many errors on the bus (e.g. a faulty node). Recover by ourselves instead of
+		// staying off the bus until the next power cycle.
 		screenUi.set_can_status(false, "BUS OFF");
+		ESP_LOGW(TAG, "CAN bus off - recovering");
+		twai_initiate_recovery();
+	}
+	else if ((TWAI_STATE_STOPPED == status.state) && canRecovering)
+	{
+		// Recovery finished: the controller is stopped and has to be started again
+		screenUi.set_can_status(false, "CAN ...");
+		twai_start();
+		ESP_LOGI(TAG, "CAN restarted after bus off");
 	}
 	else if ((status.tx_error_counter > 96) || (status.rx_error_counter > 96))
 	{
@@ -365,6 +389,29 @@ extern "C" void app_main()
 	{
 		ESP_LOGE(TAG, "Display init FAILED - continuing without screen");
 	}
+
+	// CAN is started before the serial ports (RS485, GPS): each driver claims a CPU interrupt,
+	// and CAN must not be the one left without.
+	// ---- CAN via the ESP32's built-in controller (TWAI), 250 kbit/s ----
+	twaiConfig.rx_queue_len = 64; // object pool transfers arrive in fast bursts
+	twaiConfig.tx_queue_len = 16;
+	auto canDriver = std::make_shared<isobus::TWAIPlugin>(&twaiConfig, &twaiTiming, &twaiFilter);
+
+	isobus::CANStackLogger::set_can_stack_logger_sink(&logger);
+	isobus::CANStackLogger::set_log_level(isobus::CANStackLogger::LoggingLevel::Info);
+	// Room for ~400 frames: drawing can pause the CAN update for a few tens of ms during a pool transfer
+	isobus::CANHardwareInterface::set_number_of_can_channels(1, 400);
+	isobus::CANHardwareInterface::assign_can_channel_frame_handler(0, canDriver);
+
+	// start(false): no separate stack thread. We call CANHardwareInterface::update() ourselves
+	// below, so every VT server callback runs in this task, never while we draw.
+	if (!isobus::CANHardwareInterface::start(false) || !canDriver->get_is_valid())
+	{
+		ESP_LOGE(TAG, "CAN start FAILED");
+	}
+	twai_status_info_t canStatus;
+	esp_err_t canCheck = twai_get_status_info(&canStatus);
+	ESP_LOGI(TAG, "CAN driver: %s", (ESP_OK == canCheck) ? "running" : esp_err_to_name(canCheck));
 
 	relays.start();      // RS485 relay board for the lights
 	gpsReceiver.start(); // GPS on the sensor header, for speed
@@ -389,24 +436,6 @@ extern "C" void app_main()
 		renderer->set_status("ISOBUS VT\n\nStarting...");
 		renderer->render(nullptr, isobus::NULL_OBJECT_ID);
 		board::lvgl_unlock();
-	}
-
-	// ---- CAN via the ESP32's built-in controller (TWAI), 250 kbit/s ----
-	twaiConfig.rx_queue_len = 64; // object pool transfers arrive in fast bursts
-	twaiConfig.tx_queue_len = 16;
-	auto canDriver = std::make_shared<isobus::TWAIPlugin>(&twaiConfig, &twaiTiming, &twaiFilter);
-
-	isobus::CANStackLogger::set_can_stack_logger_sink(&logger);
-	isobus::CANStackLogger::set_log_level(isobus::CANStackLogger::LoggingLevel::Info);
-	// Room for ~400 frames: drawing can pause the CAN update for a few tens of ms during a pool transfer
-	isobus::CANHardwareInterface::set_number_of_can_channels(1, 400);
-	isobus::CANHardwareInterface::assign_can_channel_frame_handler(0, canDriver);
-
-	// start(false): no separate stack thread. We call CANHardwareInterface::update() ourselves
-	// below, so every VT server callback runs in this task, never while we draw.
-	if (!isobus::CANHardwareInterface::start(false) || !canDriver->get_is_valid())
-	{
-		ESP_LOGE(TAG, "CAN start FAILED");
 	}
 
 	// ---- Our identity: a Virtual Terminal ----

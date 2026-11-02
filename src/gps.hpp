@@ -24,6 +24,7 @@ namespace gps
 	private:
 		static void task_entry(void *self);
 		void run();
+		bool init_uart();
 
 		std::atomic<std::int32_t> speedTenths{ 0 };
 		std::atomic<std::int32_t> satellites{ 0 };
