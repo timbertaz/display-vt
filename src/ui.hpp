@@ -78,6 +78,9 @@ namespace ui
 		void set_isobus_state(IsobusState state);
 		void set_can_status(bool busOk, const char *text);
 
+		// Speed in the tab rail. gpsConnected = NMEA data arriving, fix = receiver has a position.
+		void set_speed(bool gpsConnected, bool fix, float speedKmh, int satellites);
+
 	private:
 		struct Target
 		{
@@ -110,6 +113,10 @@ namespace ui
 		lv_obj_t *isobusDot = nullptr;
 		lv_obj_t *canDot = nullptr;
 		lv_obj_t *canLabel = nullptr;
+		lv_obj_t *speedValue = nullptr;
+		lv_obj_t *speedUnit = nullptr;
+		lv_obj_t *gpsDot = nullptr;
+		lv_obj_t *gpsLabel = nullptr;
 
 		// Lights page
 		std::array<bool, 3> lightOn{};

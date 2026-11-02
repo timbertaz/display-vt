@@ -125,6 +125,31 @@ namespace ui
 		lv_obj_align(isobusDot, LV_ALIGN_TOP_RIGHT, -10, 10);
 		set_isobus_state(IsobusState::NoImplement);
 
+		// Speed from the GPS, below the tabs (visible on every tab)
+		lv_obj_t *divider = plain_box(rail);
+		lv_obj_set_pos(divider, 16, 352);
+		lv_obj_set_size(divider, RAIL_WIDTH - 35, 1);
+		lv_obj_set_style_bg_color(divider, lv_color_hex(colour::BORDER), 0);
+		lv_obj_set_style_bg_opa(divider, LV_OPA_COVER, 0);
+
+		speedValue = text(rail, "--", &lv_font_montserrat_28, colour::TEXT);
+		lv_obj_set_width(speedValue, RAIL_WIDTH - 3);
+		lv_obj_set_style_text_align(speedValue, LV_TEXT_ALIGN_CENTER, 0);
+		lv_obj_set_pos(speedValue, 0, 362);
+		speedUnit = text(rail, "km/h", &lv_font_montserrat_12, colour::TEXT_DIM);
+		lv_obj_set_width(speedUnit, RAIL_WIDTH - 3);
+		lv_obj_set_style_text_align(speedUnit, LV_TEXT_ALIGN_CENTER, 0);
+		lv_obj_set_pos(speedUnit, 0, 396);
+
+		gpsDot = plain_box(rail);
+		lv_obj_set_size(gpsDot, 10, 10);
+		lv_obj_set_style_radius(gpsDot, LV_RADIUS_CIRCLE, 0);
+		lv_obj_set_style_bg_opa(gpsDot, LV_OPA_COVER, 0);
+		lv_obj_set_pos(gpsDot, 14, PAGE_HEIGHT - 53);
+		gpsLabel = text(rail, "GPS", &lv_font_montserrat_12, colour::TEXT_DIM);
+		lv_obj_set_pos(gpsLabel, 30, PAGE_HEIGHT - 56);
+		set_speed(false, false, 0.0f, 0);
+
 		// CAN bus status at the bottom of the rail
 		canDot = plain_box(rail);
 		lv_obj_set_size(canDot, 10, 10);
@@ -187,6 +212,31 @@ namespace ui
 	{
 		lv_obj_set_style_bg_color(canDot, lv_color_hex(busOk ? colour::GREEN : colour::RED), 0);
 		lv_label_set_text(canLabel, label);
+	}
+
+	void Ui::set_speed(bool gpsConnected, bool fix, float speedKmh, int satellites)
+	{
+		if (fix)
+		{
+			// GPS speed jitters by a few tenths when standing still
+			if (speedKmh < 0.5f)
+			{
+				speedKmh = 0.0f;
+			}
+			int tenths = static_cast<int>(speedKmh * 10.0f + 0.5f);
+			lv_label_set_text_fmt(speedValue, "%d.%d", tenths / 10, tenths % 10);
+			lv_obj_set_style_text_color(speedValue, lv_color_hex(colour::TEXT), 0);
+			lv_label_set_text_fmt(gpsLabel, "GPS %d", satellites);
+		}
+		else
+		{
+			lv_label_set_text(speedValue, "--");
+			lv_obj_set_style_text_color(speedValue, lv_color_hex(colour::TEXT_DIM), 0);
+			lv_label_set_text(gpsLabel, gpsConnected ? "NO FIX" : "NO GPS");
+		}
+
+		std::uint32_t dot = fix ? colour::GREEN : (gpsConnected ? colour::YELLOW : colour::RED);
+		lv_obj_set_style_bg_color(gpsDot, lv_color_hex(dot), 0);
 	}
 
 	// ------------------------------------------------------------------ lights page
