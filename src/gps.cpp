@@ -3,6 +3,7 @@
 #include "nmea.hpp"
 
 #include "driver/uart.h"
+#include "esp_err.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -85,9 +86,40 @@ namespace gps
 		bool hadFix = false;
 		std::uint8_t buffer[128];
 
+		// Until the first valid sentence: report what arrives every 5 s, and if bytes arrive but
+		// never form valid NMEA, try the other common baud rates (some modules ship at 38400).
+		static const int BAUD_RATES[] = { 9600, 38400, 4800, 115200, 57600, 19200 };
+		std::size_t baudIndex = 0;
+		std::uint32_t bytesSinceReport = 0;
+		std::uint32_t lastReport = now_ms();
+
 		while (true)
 		{
 			int got = uart_read_bytes(PORT, buffer, sizeof(buffer), pdMS_TO_TICKS(100));
+			if (got > 0)
+			{
+				bytesSinceReport += static_cast<std::uint32_t>(got);
+			}
+
+			if (!everHeard.load() && ((now_ms() - lastReport) >= 5000))
+			{
+				if (0 == bytesSinceReport)
+				{
+					ESP_LOGW(TAG, "No data from the GPS on GPIO%d - check power and the GPS TX wire", PIN_RX);
+				}
+				else
+				{
+					ESP_LOGW(TAG, "%lu bytes at %d baud but no valid NMEA - trying another baud rate",
+					         static_cast<unsigned long>(bytesSinceReport), BAUD_RATES[baudIndex]);
+					baudIndex = (baudIndex + 1) % (sizeof(BAUD_RATES) / sizeof(BAUD_RATES[0]));
+					uart_set_baudrate(PORT, BAUD_RATES[baudIndex]);
+					uart_flush_input(PORT);
+					ESP_LOGI(TAG, "Now listening at %d baud", BAUD_RATES[baudIndex]);
+				}
+				bytesSinceReport = 0;
+				lastReport = now_ms();
+			}
+
 			for (int i = 0; i < got; i++)
 			{
 				if (parser.feed(static_cast<char>(buffer[i])))
@@ -99,7 +131,7 @@ namespace gps
 					lastSentenceMs = now_ms();
 					if (!everHeard.load())
 					{
-						ESP_LOGI(TAG, "GPS connected (NMEA data arriving)");
+						ESP_LOGI(TAG, "GPS connected (NMEA data arriving at %d baud)", BAUD_RATES[baudIndex]);
 						everHeard = true;
 					}
 					if (f.valid != hadFix)
