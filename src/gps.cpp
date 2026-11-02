@@ -27,6 +27,12 @@ namespace gps
 
 	bool Gps::start()
 	{
+		// UART installed inside the task on core 1 (core 0 has no interrupts to spare)
+		return pdPASS == xTaskCreatePinnedToCore(task_entry, "gps", 4096, this, 2, nullptr, 1);
+	}
+
+	bool Gps::init_uart()
+	{
 		uart_config_t config = {};
 		config.baud_rate = BAUD_RATE;
 		config.data_bits = UART_DATA_8_BITS;
@@ -35,14 +41,20 @@ namespace gps
 		config.flow_ctrl = UART_HW_FLOWCTRL_DISABLE;
 		config.source_clk = UART_SCLK_DEFAULT;
 
-		if ((ESP_OK != uart_driver_install(PORT, 1024, 0, 0, nullptr, 0)) ||
-		    (ESP_OK != uart_param_config(PORT, &config)) ||
-		    (ESP_OK != uart_set_pin(PORT, UART_PIN_NO_CHANGE, PIN_RX, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE)))
+		esp_err_t error = uart_driver_install(PORT, 1024, 0, 0, nullptr, 0);
+		if (ESP_OK == error)
 		{
-			ESP_LOGE(TAG, "GPS UART init FAILED");
+			error = uart_param_config(PORT, &config);
+		}
+		if (ESP_OK == error)
+		{
+			error = uart_set_pin(PORT, UART_PIN_NO_CHANGE, PIN_RX, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+		}
+		if (ESP_OK != error)
+		{
+			ESP_LOGE(TAG, "GPS UART init FAILED: %s", esp_err_to_name(error));
 			return false;
 		}
-		xTaskCreatePinnedToCore(task_entry, "gps", 4096, this, 2, nullptr, 0);
 		ESP_LOGI(TAG, "Listening for GPS on GPIO%d at %d baud", PIN_RX, BAUD_RATE);
 		return true;
 	}
@@ -64,6 +76,11 @@ namespace gps
 
 	void Gps::run()
 	{
+		if (!init_uart())
+		{
+			vTaskDelete(nullptr);
+			return;
+		}
 		nmea::Parser parser;
 		bool hadFix = false;
 		std::uint8_t buffer[128];

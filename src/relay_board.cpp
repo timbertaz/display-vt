@@ -33,6 +33,14 @@ namespace relay
 
 	bool RelayBoard::start()
 	{
+		commandQueue = xQueueCreate(16, sizeof(Command));
+		// The task installs the UART itself: interrupts are taken from the core that installs a
+		// driver, and core 0 is busy (CAN, screen, touch). Core 1 has plenty free.
+		return pdPASS == xTaskCreatePinnedToCore(task_entry, "relays", 4096, this, 3, nullptr, 1);
+	}
+
+	bool RelayBoard::init_uart()
+	{
 		uart_config_t config = {};
 		config.baud_rate = BAUD_RATE;
 		config.data_bits = UART_DATA_8_BITS;
@@ -41,16 +49,17 @@ namespace relay
 		config.flow_ctrl = UART_HW_FLOWCTRL_DISABLE;
 		config.source_clk = UART_SCLK_DEFAULT;
 
-		if ((ESP_OK != uart_driver_install(PORT, 256, 0, 0, nullptr, 0)) ||
-		    (ESP_OK != uart_param_config(PORT, &config)))
+		esp_err_t error = uart_driver_install(PORT, 256, 0, 0, nullptr, 0);
+		if (ESP_OK == error)
 		{
-			ESP_LOGE(TAG, "RS485 UART init FAILED");
+			error = uart_param_config(PORT, &config);
+		}
+		if (ESP_OK != error)
+		{
+			ESP_LOGE(TAG, "RS485 UART init FAILED: %s", esp_err_to_name(error));
 			return false;
 		}
 		apply_pins();
-
-		commandQueue = xQueueCreate(16, sizeof(Command));
-		xTaskCreatePinnedToCore(task_entry, "relays", 4096, this, 3, nullptr, 0);
 		ESP_LOGI(TAG, "RS485 started, looking for relay board at address %u, %d baud", DEVICE_ADDRESS, BAUD_RATE);
 		return true;
 	}
@@ -124,6 +133,11 @@ namespace relay
 
 	void RelayBoard::run()
 	{
+		if (!init_uart())
+		{
+			vTaskDelete(nullptr);
+			return;
+		}
 		int failures = 0;
 		TickType_t lastPoll = 0;
 

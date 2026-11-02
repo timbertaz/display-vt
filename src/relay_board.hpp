@@ -32,6 +32,7 @@ namespace relay
 	private:
 		static void task_entry(void *self);
 		void run();
+		bool init_uart();
 		bool transaction(const std::uint8_t *request, std::size_t requestLength, std::uint8_t *reply, std::size_t &replyLength, std::size_t wantedLength);
 		bool poll_states();
 		void apply_pins();
