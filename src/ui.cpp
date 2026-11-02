@@ -348,7 +348,25 @@ namespace ui
 				break;
 		}
 
-		// Summary next to the title
+		update_lights_summary();
+	}
+
+	void Ui::set_lights_online(bool online)
+	{
+		lightsOnline = online;
+		update_lights_summary();
+	}
+
+	void Ui::update_lights_summary()
+	{
+		if (!lightsOnline)
+		{
+			lv_label_set_text(lightsSummary, "Lights module offline");
+			lv_obj_set_style_text_color(lightsSummary, lv_color_hex(colour::RED), 0);
+			return;
+		}
+
+		lv_obj_set_style_text_color(lightsSummary, lv_color_hex(colour::TEXT_DIM), 0);
 		int count = (lightOn[0] ? 1 : 0) + (lightOn[1] ? 1 : 0) + (lightOn[2] ? 1 : 0);
 		if (0 == count)
 		{

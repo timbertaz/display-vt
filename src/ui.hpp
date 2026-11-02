@@ -70,6 +70,9 @@ namespace ui
 		Tab current_tab() const { return currentTab; }
 
 		void set_light(Light light, bool on);
+
+		// Shows "Lights module offline" next to the title when the relay board doesn't answer
+		void set_lights_online(bool online);
 		bool get_light(Light light) const { return lightOn[static_cast<int>(light)]; }
 
 		void set_isobus_state(IsobusState state);
@@ -89,6 +92,7 @@ namespace ui
 		void make_hotspot(lv_obj_t *parent, Light light, lv_coord_t centreX, lv_coord_t centreY);
 		void style_tab(int index, bool selected);
 		void request_toggle(Light light);
+		void update_lights_summary();
 
 		static void tab_clicked(lv_event_t *e);
 		static void light_clicked(lv_event_t *e);
@@ -117,6 +121,7 @@ namespace ui
 		lv_obj_t *beamRear = nullptr;
 		lv_obj_t *beaconGlow = nullptr;
 		lv_obj_t *lightsSummary = nullptr;
+		bool lightsOnline = true;
 
 		std::array<Target, 3> tabTargets{};
 		std::array<Target, 3> lightTargets{};
