@@ -138,7 +138,7 @@ namespace
 		}
 	}
 
-	bool start_camera()
+	camera_config_t make_config(pixformat_t format, framesize_t size, int buffers)
 	{
 		camera_config_t config = {};
 		config.pin_pwdn = PIN_PWDN;
@@ -160,13 +160,117 @@ namespace
 		config.xclk_freq_hz = XCLK_HZ;
 		config.ledc_timer = LEDC_TIMER_0;
 		config.ledc_channel = LEDC_CHANNEL_0;
-		config.pixel_format = PIXFORMAT_JPEG;
-		config.frame_size = FRAME_SIZE;
+		config.pixel_format = format;
+		config.frame_size = size;
 		config.jpeg_quality = JPEG_QUALITY;
-		config.fb_count = 3; // one per stream client + one being filled
+		config.fb_count = buffers;
 		config.fb_location = CAMERA_FB_IN_PSRAM;
-		config.grab_mode = CAMERA_GRAB_LATEST; // always the newest picture: no lag when reversing
+		config.grab_mode = (buffers > 1) ? CAMERA_GRAB_LATEST : CAMERA_GRAB_WHEN_EMPTY;
+		return config;
+	}
 
+	// Data wire test: the camera sends its built-in colour bars as plain grey values (no JPEG),
+	// and we look at each data wire. A wire that never changes isn't connected; two wires that
+	// always carry the same value are touching or go to the same pin. The bar values show swaps.
+	void data_wire_test()
+	{
+		ESP_LOGW(TAG, "---- Data wire test (colour bars) ----");
+		camera_config_t config = make_config(PIXFORMAT_GRAYSCALE, FRAMESIZE_QQVGA, 1);
+		if (ESP_OK != esp_camera_init(&config))
+		{
+			ESP_LOGE(TAG, "Wire test: camera did not start");
+			return;
+		}
+		sensor_t *sensor = esp_camera_sensor_get();
+		sensor->set_hmirror(sensor, 0);
+		sensor->set_colorbar(sensor, 1);
+
+		camera_fb_t *frame = nullptr;
+		for (int i = 0; i < 4; i++) // skip the first pictures while the sensor settles
+		{
+			if (nullptr != frame)
+			{
+				esp_camera_fb_return(frame);
+			}
+			frame = esp_camera_fb_get();
+		}
+		if (nullptr == frame)
+		{
+			ESP_LOGE(TAG, "Wire test: no picture at all -> check VSYNC -> GPIO%d, HREF -> GPIO%d, PCLK -> GPIO%d", PIN_VSYNC, PIN_HREF, PIN_PCLK);
+			esp_camera_deinit();
+			return;
+		}
+
+		const int pins[8] = { PIN_D0, PIN_D1, PIN_D2, PIN_D3, PIN_D4, PIN_D5, PIN_D6, PIN_D7 };
+		std::uint32_t ones[8] = {};
+		std::uint32_t same[8][8] = {};
+		for (std::size_t n = 0; n < frame->len; n++)
+		{
+			std::uint8_t v = frame->buf[n];
+			for (int a = 0; a < 8; a++)
+			{
+				ones[a] += (v >> a) & 1;
+				for (int b = a + 1; b < 8; b++)
+				{
+					same[a][b] += (((v >> a) ^ (v >> b)) & 1) ? 0 : 1;
+				}
+			}
+		}
+		ESP_LOGI(TAG, "Picture %ux%u, %u bytes", static_cast<unsigned>(frame->width), static_cast<unsigned>(frame->height), static_cast<unsigned>(frame->len));
+		for (int a = 0; a < 8; a++)
+		{
+			unsigned percent = static_cast<unsigned>(ones[a] * 100ULL / frame->len);
+			const char *verdict = "OK";
+			char buddy[48] = "";
+			if (0 == ones[a])
+			{
+				verdict = "ALWAYS 0 -> not connected / broken";
+			}
+			else if (ones[a] == frame->len)
+			{
+				verdict = "ALWAYS 1 -> not connected / touching 3.3V";
+			}
+			else
+			{
+				for (int b = 0; b < 8; b++)
+				{
+					if (b == a)
+					{
+						continue;
+					}
+					std::uint32_t match = (a < b) ? same[a][b] : same[b][a];
+					if (match * 1000ULL >= frame->len * 995ULL)
+					{
+						std::snprintf(buddy, sizeof(buddy), "always same as D%d (touching?)", b);
+						verdict = buddy;
+						break;
+					}
+				}
+			}
+			ESP_LOGI(TAG, "  D%d (GPIO%-2d): %3u%% ones  %s", a, pins[a], percent, verdict);
+		}
+
+		// Middle row, the centre of each of the 8 bars
+		char bars[8 * 14 + 1] = "";
+		std::size_t width = frame->width;
+		std::size_t row = (frame->height / 2) * width;
+		for (int bar = 0; bar < 8; bar++)
+		{
+			std::uint8_t v = frame->buf[row + (width / 8) * bar + width / 16];
+			char bits[14];
+			std::snprintf(bits, sizeof(bits), "%3u=%c%c%c%c%c%c%c%c ", v, (v & 0x80) ? '1' : '0', (v & 0x40) ? '1' : '0', (v & 0x20) ? '1' : '0',
+			              (v & 0x10) ? '1' : '0', (v & 0x08) ? '1' : '0', (v & 0x04) ? '1' : '0', (v & 0x02) ? '1' : '0', (v & 0x01) ? '1' : '0');
+			std::strcat(bars, bits);
+		}
+		ESP_LOGI(TAG, "  Bars: %s", bars);
+		ESP_LOGW(TAG, "---- End of wire test ----");
+		esp_camera_fb_return(frame);
+		esp_camera_deinit();
+	}
+
+	bool start_camera()
+	{
+		camera_config_t config = make_config(PIXFORMAT_JPEG, FRAME_SIZE, 3); // one buffer per stream client + one being filled
 		esp_err_t error = esp_camera_init(&config);
 		if (ESP_OK != error)
 		{
@@ -197,9 +301,10 @@ namespace
 		camera_fb_t *frame = esp_camera_fb_get();
 		if (nullptr == frame)
 		{
-			ESP_LOGE(TAG, "Camera answers but sends no pictures. Check VSYNC -> GPIO%d, HREF -> GPIO%d, PCLK -> GPIO%d and D0-D7",
+			ESP_LOGE(TAG, "Camera answers but sends no usable pictures. Check VSYNC -> GPIO%d, HREF -> GPIO%d, PCLK -> GPIO%d and D0-D7",
 			         PIN_VSYNC, PIN_HREF, PIN_PCLK);
 			esp_camera_deinit();
+			data_wire_test();
 			return false;
 		}
 		ESP_LOGI(TAG, "First picture: %ux%u, %u bytes", static_cast<unsigned>(frame->width), static_cast<unsigned>(frame->height), static_cast<unsigned>(frame->len));
