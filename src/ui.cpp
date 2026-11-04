@@ -461,26 +461,227 @@ namespace ui
 
 	// ------------------------------------------------------------------ camera page
 
+	namespace
+	{
+		constexpr lv_coord_t VIDEO_W = 640;
+		constexpr lv_coord_t VIDEO_H = 480;
+
+		// Reversing guide lines on the 640x480 picture: red (close), yellow, green (far)
+		lv_point_t GUIDES[6][3] = {
+			{ { 150, 480 }, { 187, 400 }, { 217, 400 } }, // red left
+			{ { 490, 480 }, { 453, 400 }, { 423, 400 } }, // red right
+			{ { 187, 400 }, { 223, 320 }, { 248, 320 } }, // yellow left
+			{ { 453, 400 }, { 417, 320 }, { 392, 320 } }, // yellow right
+			{ { 223, 320 }, { 255, 250 }, { 280, 250 } }, // green left
+			{ { 417, 320 }, { 385, 250 }, { 360, 250 } }, // green right
+		};
+		const std::uint32_t GUIDE_COLOURS[3] = { 0xFF3B30, 0xFFB800, 0x3DD68C };
+
+		// Small "guide lines" icon for the side button
+		lv_point_t GUIDE_ICON[2][2] = {
+			{ { 8, 34 }, { 18, 2 } },
+			{ { 40, 34 }, { 30, 2 } },
+		};
+	}
+
+	lv_obj_t *Ui::make_side_button(lv_obj_t *parent, lv_coord_t y, const char *label, lv_event_cb_t callback)
+	{
+		lv_obj_t *button = plain_box(parent);
+		lv_obj_add_flag(button, LV_OBJ_FLAG_CLICKABLE);
+		lv_obj_set_pos(button, 4, y);
+		lv_obj_set_size(button, PAGE_WIDTH - VIDEO_W - 8, 100);
+		lv_obj_set_style_radius(button, 12, 0);
+		lv_obj_set_style_bg_opa(button, LV_OPA_COVER, 0);
+		lv_obj_set_style_border_width(button, 2, 0);
+		add_press_feedback(button);
+		lv_obj_t *name = text(button, label, &lv_font_montserrat_12, colour::TEXT_DIM);
+		lv_obj_set_style_text_letter_space(name, 1, 0);
+		lv_obj_align(name, LV_ALIGN_BOTTOM_MID, 0, -10);
+		lv_obj_add_event_cb(button, callback, LV_EVENT_CLICKED, this);
+		return button;
+	}
+
+	void Ui::style_side_button(lv_obj_t *button, bool on)
+	{
+		lv_obj_set_style_bg_color(button, lv_color_hex(on ? colour::YELLOW : colour::PANEL), 0);
+		lv_obj_set_style_border_color(button, lv_color_hex(on ? colour::YELLOW : colour::BORDER), 0);
+		std::uint32_t ink = on ? colour::TEXT_ON_YELLOW : colour::TEXT_DIM;
+		std::uint32_t count = lv_obj_get_child_cnt(button);
+		for (std::uint32_t i = 0; i < count; i++)
+		{
+			lv_obj_t *child = lv_obj_get_child(button, i);
+			lv_obj_set_style_text_color(child, lv_color_hex(ink), 0);
+			lv_obj_set_style_img_recolor(child, lv_color_hex(ink), 0);
+			lv_obj_set_style_line_color(child, lv_color_hex(ink), 0);
+		}
+	}
+
 	void Ui::build_camera_page(lv_obj_t *page)
 	{
-		lv_obj_t *title = text(page, "CAMERA", &lv_font_montserrat_24, colour::TEXT);
-		lv_obj_set_style_text_letter_space(title, 3, 0);
-		lv_obj_set_pos(title, 24, 18);
+		// ---- the picture (full page height, 640 wide) ----
+		lv_obj_t *video = plain_box(page);
+		lv_obj_set_size(video, VIDEO_W, VIDEO_H);
+		lv_obj_set_style_bg_color(video, lv_color_hex(0x0C0C0C), 0);
+		lv_obj_set_style_bg_opa(video, LV_OPA_COVER, 0);
+		lv_obj_set_style_clip_corner(video, false, 0);
 
-		lv_obj_t *frame = plain_box(page);
-		lv_obj_set_pos(frame, 24, 64);
-		lv_obj_set_size(frame, PAGE_WIDTH - 48, PAGE_HEIGHT - 88);
-		lv_obj_set_style_radius(frame, 16, 0);
-		lv_obj_set_style_bg_color(frame, lv_color_hex(0x101010), 0);
-		lv_obj_set_style_bg_opa(frame, LV_OPA_COVER, 0);
-		lv_obj_set_style_border_width(frame, 2, 0);
-		lv_obj_set_style_border_color(frame, lv_color_hex(colour::BORDER), 0);
+		videoImg = lv_img_create(video);
+		lv_obj_clear_flag(videoImg, LV_OBJ_FLAG_CLICKABLE);
+		lv_obj_add_flag(videoImg, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_center(videoImg);
 
-		lv_obj_t *camIcon = icon(frame, &img_icon_camera_big, 0x4A4A4A);
-		lv_obj_align(camIcon, LV_ALIGN_CENTER, 0, -36);
-		lv_obj_t *line1 = text(frame, "No camera connected", &lv_font_montserrat_20, colour::TEXT);
-		lv_obj_align(line1, LV_ALIGN_CENTER, 0, 40);
-		lv_obj_t *line2 = text(frame, "The reversing camera picture will show here", &lv_font_montserrat_14, colour::TEXT_DIM);
-		lv_obj_align(line2, LV_ALIGN_CENTER, 0, 72);
+		videoPlaceholder = plain_box(video);
+		lv_obj_set_size(videoPlaceholder, VIDEO_W, 220);
+		lv_obj_center(videoPlaceholder);
+		lv_obj_t *camIcon = icon(videoPlaceholder, &img_icon_camera_big, 0x4A4A4A);
+		lv_obj_align(camIcon, LV_ALIGN_TOP_MID, 0, 0);
+		placeholderTitle = text(videoPlaceholder, "No camera", &lv_font_montserrat_20, colour::TEXT);
+		lv_obj_align(placeholderTitle, LV_ALIGN_TOP_MID, 0, 116);
+		placeholderText = text(videoPlaceholder, "Looking for the camera's WiFi (HESAB-CAM)", &lv_font_montserrat_14, colour::TEXT_DIM);
+		lv_obj_align(placeholderText, LV_ALIGN_TOP_MID, 0, 150);
+
+		// ---- guide lines (drawn over the picture) ----
+		guideLines = plain_box(video);
+		lv_obj_set_size(guideLines, VIDEO_W, VIDEO_H);
+		for (int pass = 0; pass < 2; pass++) // dark outline first, then the colour on top
+		{
+			for (int i = 0; i < 6; i++)
+			{
+				lv_obj_t *line = lv_line_create(guideLines);
+				lv_line_set_points(line, GUIDES[i], 3);
+				lv_obj_set_style_line_width(line, (0 == pass) ? 9 : 5, 0);
+				lv_obj_set_style_line_rounded(line, true, 0);
+				lv_obj_set_style_line_color(line, lv_color_hex((0 == pass) ? 0x000000 : GUIDE_COLOURS[i / 2]), 0);
+				lv_obj_set_style_line_opa(line, (0 == pass) ? LV_OPA_50 : LV_OPA_COVER, 0);
+				lv_obj_clear_flag(line, LV_OBJ_FLAG_CLICKABLE);
+			}
+		}
+		lv_obj_add_flag(guideLines, LV_OBJ_FLAG_HIDDEN); // only with a picture
+
+		// ---- status chip, top left of the picture ----
+		cameraChip = plain_box(video);
+		lv_obj_set_pos(cameraChip, 12, 12);
+		lv_obj_set_size(cameraChip, LV_SIZE_CONTENT, 30);
+		lv_obj_set_style_pad_left(cameraChip, 30, 0);
+		lv_obj_set_style_pad_right(cameraChip, 12, 0);
+		lv_obj_set_style_radius(cameraChip, 15, 0);
+		lv_obj_set_style_bg_color(cameraChip, lv_color_hex(0x000000), 0);
+		lv_obj_set_style_bg_opa(cameraChip, LV_OPA_60, 0);
+		cameraChipDot = plain_box(cameraChip);
+		lv_obj_set_size(cameraChipDot, 10, 10);
+		lv_obj_set_style_radius(cameraChipDot, LV_RADIUS_CIRCLE, 0);
+		lv_obj_set_style_bg_opa(cameraChipDot, LV_OPA_COVER, 0);
+		lv_obj_align(cameraChipDot, LV_ALIGN_LEFT_MID, -18, 0);
+		cameraChipText = text(cameraChip, "NO CAMERA", &lv_font_montserrat_12, colour::TEXT);
+		lv_obj_set_style_text_letter_space(cameraChipText, 1, 0);
+		lv_obj_align(cameraChipText, LV_ALIGN_LEFT_MID, 0, 0);
+
+		// ---- side buttons: camera LEDs, guide lines ----
+		lv_obj_t *side = plain_box(page);
+		lv_obj_set_pos(side, VIDEO_W, 0);
+		lv_obj_set_size(side, PAGE_WIDTH - VIDEO_W, PAGE_HEIGHT);
+
+		ledButton = make_side_button(side, 12, "LEDS", camera_led_clicked);
+		lv_obj_t *ledIcon = icon(ledButton, &img_icon_rear, colour::TEXT_DIM);
+		lv_obj_align(ledIcon, LV_ALIGN_TOP_MID, 0, 14);
+		style_side_button(ledButton, false);
+
+		linesButton = make_side_button(side, 124, "GUIDE", guide_lines_clicked);
+		for (auto &points : GUIDE_ICON)
+		{
+			lv_obj_t *line = lv_line_create(linesButton);
+			lv_line_set_points(line, points, 2);
+			lv_obj_set_style_line_width(line, 4, 0);
+			lv_obj_set_style_line_rounded(line, true, 0);
+			lv_obj_align(line, LV_ALIGN_TOP_MID, 0, 22);
+			lv_obj_clear_flag(line, LV_OBJ_FLAG_CLICKABLE);
+		}
+		style_side_button(linesButton, guidesShown);
+
+		set_camera_state(CameraState::NoWifi, 0.0f);
+	}
+
+	void Ui::show_camera_frame(const std::uint16_t *pixels, int width, int height)
+	{
+		videoDsc.header.always_zero = 0;
+		videoDsc.header.cf = LV_IMG_CF_TRUE_COLOR;
+		videoDsc.header.w = static_cast<std::uint32_t>(width);
+		videoDsc.header.h = static_cast<std::uint32_t>(height);
+		videoDsc.data_size = static_cast<std::uint32_t>(width * height * 2);
+		videoDsc.data = reinterpret_cast<const std::uint8_t *>(pixels);
+		lv_img_cache_invalidate_src(&videoDsc); // same descriptor, new pixels
+		lv_img_set_src(videoImg, &videoDsc);
+		lv_obj_center(videoImg);
+
+		if (!haveFrame)
+		{
+			haveFrame = true;
+			lv_obj_clear_flag(videoImg, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_add_flag(videoPlaceholder, LV_OBJ_FLAG_HIDDEN);
+			if (guidesShown)
+			{
+				lv_obj_clear_flag(guideLines, LV_OBJ_FLAG_HIDDEN);
+			}
+		}
+	}
+
+	void Ui::set_camera_state(CameraState state, float fps)
+	{
+		std::uint32_t dot = colour::RED;
+		char chip[32] = "NO CAMERA";
+		if (CameraState::Streaming == state)
+		{
+			dot = colour::GREEN;
+			lv_snprintf(chip, sizeof(chip), "LIVE  %d fps", static_cast<int>(fps + 0.5f));
+		}
+		else if (CameraState::Connecting == state)
+		{
+			dot = colour::YELLOW;
+			lv_snprintf(chip, sizeof(chip), "CONNECTING");
+		}
+		lv_obj_set_style_bg_color(cameraChipDot, lv_color_hex(dot), 0);
+		lv_label_set_text(cameraChipText, chip);
+
+		if (CameraState::Streaming != state)
+		{
+			// Never leave a frozen picture on screen: it would look like a live view
+			haveFrame = false;
+			lv_obj_add_flag(videoImg, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_add_flag(guideLines, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_clear_flag(videoPlaceholder, LV_OBJ_FLAG_HIDDEN);
+			bool noWifi = (CameraState::NoWifi == state);
+			lv_label_set_text(placeholderTitle, noWifi ? "No camera" : "Connecting...");
+			lv_label_set_text(placeholderText, noWifi ? "Looking for the camera's WiFi (HESAB-CAM)" : "Camera found, waiting for the picture");
+		}
+	}
+
+	void Ui::set_camera_led(bool on)
+	{
+		cameraLedOn = on;
+		style_side_button(ledButton, on);
+	}
+
+	void Ui::camera_led_clicked(lv_event_t *e)
+	{
+		auto *self = static_cast<Ui *>(lv_event_get_user_data(e));
+		if (self->onCameraLed)
+		{
+			self->onCameraLed(!self->cameraLedOn);
+		}
+	}
+
+	void Ui::guide_lines_clicked(lv_event_t *e)
+	{
+		auto *self = static_cast<Ui *>(lv_event_get_user_data(e));
+		self->guidesShown = !self->guidesShown;
+		self->style_side_button(self->linesButton, self->guidesShown);
+		if (self->guidesShown && self->haveFrame)
+		{
+			lv_obj_clear_flag(self->guideLines, LV_OBJ_FLAG_HIDDEN);
+		}
+		else
+		{
+			lv_obj_add_flag(self->guideLines, LV_OBJ_FLAG_HIDDEN);
+		}
 	}
 }

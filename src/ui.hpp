@@ -51,6 +51,13 @@ namespace ui
 		Alarm        // red dot
 	};
 
+	enum class CameraState : std::uint8_t
+	{
+		NoWifi,     // camera network not found
+		Connecting, // on the network, no picture yet
+		Streaming
+	};
+
 	class Ui
 	{
 	public:
@@ -81,6 +88,12 @@ namespace ui
 		// Speed in the tab rail. gpsConnected = NMEA data arriving, fix = receiver has a position.
 		void set_speed(bool gpsConnected, bool fix, float speedKmh, int satellites);
 
+		// Camera page. show_camera_frame keeps a pointer to pixels (RGB565) until the next call.
+		void show_camera_frame(const std::uint16_t *pixels, int width, int height);
+		void set_camera_state(CameraState state, float fps);
+		void set_camera_led(bool on); // what the camera reports
+		void set_camera_led_handler(std::function<void(bool wantOn)> handler) { onCameraLed = std::move(handler); }
+
 	private:
 		struct Target
 		{
@@ -101,6 +114,10 @@ namespace ui
 		static void light_clicked(lv_event_t *e);
 		static void all_off_clicked(lv_event_t *e);
 		static void beacon_anim(void *object, int32_t value);
+		static void camera_led_clicked(lv_event_t *e);
+		static void guide_lines_clicked(lv_event_t *e);
+		lv_obj_t *make_side_button(lv_obj_t *parent, lv_coord_t y, const char *label, lv_event_cb_t callback);
+		void style_side_button(lv_obj_t *button, bool on);
 
 		LightRequestHandler onLightRequest;
 		Tab currentTab = Tab::Lights;
@@ -129,6 +146,23 @@ namespace ui
 		lv_obj_t *beaconGlow = nullptr;
 		lv_obj_t *lightsSummary = nullptr;
 		bool lightsOnline = true;
+
+		// Camera page
+		std::function<void(bool)> onCameraLed;
+		lv_img_dsc_t videoDsc{};
+		lv_obj_t *videoImg = nullptr;
+		lv_obj_t *videoPlaceholder = nullptr;
+		lv_obj_t *placeholderTitle = nullptr;
+		lv_obj_t *placeholderText = nullptr;
+		lv_obj_t *cameraChip = nullptr;
+		lv_obj_t *cameraChipDot = nullptr;
+		lv_obj_t *cameraChipText = nullptr;
+		lv_obj_t *guideLines = nullptr;
+		lv_obj_t *ledButton = nullptr;
+		lv_obj_t *linesButton = nullptr;
+		bool cameraLedOn = false;
+		bool guidesShown = true;
+		bool haveFrame = false;
 
 		std::array<Target, 3> tabTargets{};
 		std::array<Target, 3> lightTargets{};

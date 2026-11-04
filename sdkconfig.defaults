@@ -55,3 +55,12 @@ CONFIG_LV_FONT_MONTSERRAT_48=y
 CONFIG_LV_FONT_DEFAULT_MONTSERRAT_14=y
 # CONFIG_LV_USE_LOG is not set
 # CONFIG_LV_USE_PERF_MONITOR is not set
+
+# --- WiFi for the reversing camera ---
+# WiFi and its network task on core 1: core 0 has no interrupts to spare (CAN, screen, touch)
+CONFIG_ESP_WIFI_TASK_PINNED_TO_CORE_1=y
+CONFIG_LWIP_TCPIP_TASK_AFFINITY_CPU1=y
+# Keep WiFi out of IRAM, LVGL already uses a lot of it
+# CONFIG_ESP_WIFI_IRAM_OPT is not set
+# CONFIG_ESP_WIFI_RX_IRAM_OPT is not set
+CONFIG_LWIP_TCP_WND_DEFAULT=11520

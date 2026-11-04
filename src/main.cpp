@@ -9,6 +9,7 @@
 // The lights are switched by a Modbus relay board on the RS485 port (relay_board.cpp):
 //   relay 1 = front work lights, relay 2 = rear work lights, relay 3 = beacon
 // Speed comes from a GY-GPS6MV2 (NEO-6M) on the sensor header: GPS TX -> GPIO6 (gps.cpp).
+// The reversing camera (camera-node/) streams over its own WiFi network (camera_feed.cpp).
 //
 // Threading: the CAN stack, the VT server and all drawing decisions run in this main
 // task, so the object pool is never changed while it is being drawn. LVGL itself runs
@@ -24,6 +25,7 @@
 #include "isobus/isobus/isobus_virtual_terminal_server.hpp"
 
 #include "board.hpp"
+#include "camera_feed.hpp"
 #include "gps.hpp"
 #include "relay_board.hpp"
 #include "console_logger.cpp"
@@ -326,6 +328,7 @@ static void send_key_event(BenchVT &vt, const VtRenderer::KeyEvent &event)
 
 static relay::RelayBoard relays;
 static gps::Gps gpsReceiver;
+static camera::Feed cameraFeed;
 
 // Which relay on the board drives which light
 static std::uint8_t relay_for(ui::Light light)
@@ -428,6 +431,10 @@ extern "C" void app_main()
 			relays.request(relay_for(light), wantOn);
 		}));
 		screenUi->set_lights_online(false);
+		screenUi->set_camera_led_handler([](bool wantOn) {
+			ESP_LOGI(TAG, "Camera LEDs -> %s requested", wantOn ? "ON" : "OFF");
+			cameraFeed.request_led(wantOn);
+		});
 
 		renderer.reset(new VtRenderer(screenUi->isobus_page(), [](const VtRenderer::KeyEvent &event) {
 			std::lock_guard<std::mutex> lock(keyEventMutex);
@@ -436,6 +443,15 @@ extern "C" void app_main()
 		renderer->set_status("ISOBUS VT\n\nStarting...");
 		renderer->render(nullptr, isobus::NULL_OBJECT_ID);
 		board::lvgl_unlock();
+	}
+
+	// Reversing camera over WiFi. New pictures are handed to the Camera page (with the LVGL lock held).
+	if (nullptr != screenUi)
+	{
+		ui::Ui *cameraPage = screenUi.get();
+		cameraFeed.start([cameraPage](const std::uint16_t *pixels, int width, int height) {
+			cameraPage->show_camera_frame(pixels, width, height);
+		});
 	}
 
 	// ---- Our identity: a Virtual Terminal ----
@@ -474,6 +490,9 @@ extern "C" void app_main()
 	bool alarmWasShown = false;
 	std::uint32_t lastSpeedUpdate = 0;
 	int shownSpeedKey = -1;
+	std::uint32_t lastCameraUpdate = 0;
+	int shownCameraKey = -1;
+	int shownCameraLed = -1;
 	int shownRelayStates = -1; // -1 = nothing shown yet
 	bool shownRelaysOnline = false;
 	ui::IsobusState shownIsobusState = ui::IsobusState::NoImplement;
@@ -585,6 +604,28 @@ extern "C" void app_main()
 				{
 					shownSpeedKey = speedKey;
 					screenUi->set_speed(reading.connected, reading.fix, reading.speedKmh, reading.satellites);
+				}
+			}
+
+			// Camera: stream only while its tab is open; show its state and the LED state
+			if (now - lastCameraUpdate >= 250)
+			{
+				lastCameraUpdate = now;
+				cameraFeed.set_active(ui::Tab::Camera == screenUi->current_tab());
+				camera::State cameraState = cameraFeed.state();
+				int fps = static_cast<int>(cameraFeed.fps() + 0.5f);
+				int cameraKey = static_cast<int>(cameraState) * 1000 + ((camera::State::Streaming == cameraState) ? fps : 0);
+				if (cameraKey != shownCameraKey)
+				{
+					shownCameraKey = cameraKey;
+					static const ui::CameraState toUi[] = { ui::CameraState::NoWifi, ui::CameraState::Connecting, ui::CameraState::Streaming };
+					screenUi->set_camera_state(toUi[static_cast<int>(cameraState)], cameraFeed.fps());
+				}
+				int led = cameraFeed.led_on() ? 1 : 0;
+				if (led != shownCameraLed)
+				{
+					shownCameraLed = led;
+					screenUi->set_camera_led(1 == led);
 				}
 			}
 

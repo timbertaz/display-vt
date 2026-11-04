@@ -6,3 +6,6 @@ dependencies:
   # Configured through sdkconfig.defaults (CONFIG_LV_*).
   lvgl/lvgl:
     version: "~8.3.11"
+  # Fast JPEG decoder (uses the ESP32-S3 vector instructions) for the reversing camera
+  espressif/esp_new_jpeg:
+    version: "^1.0.0"

@@ -1,0 +1,7 @@
+# ESP-IDF component manager: PlatformIO downloads these on the first build.
+dependencies:
+  idf:
+    version: ">=5.1.0"
+  # Espressif's camera driver (OV5640 support, JPEG output from the sensor itself)
+  espressif/esp32-camera:
+    version: "^2.0.15"
