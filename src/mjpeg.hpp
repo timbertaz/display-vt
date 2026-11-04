@@ -36,6 +36,9 @@ namespace mjpeg
 		}
 
 		bool ok() const { return !failed; }
+
+		// Collect the next frame somewhere else (call from inside the frame handler)
+		void set_buffer(std::uint8_t *buffer) { frame = buffer; }
 		std::uint32_t skipped_frames() const { return skipped; }
 
 	private:

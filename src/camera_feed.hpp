@@ -42,6 +42,8 @@ namespace camera
 	private:
 		static void wifi_task_entry(void *self);
 		static void feed_task_entry(void *self);
+		static void decode_task_entry(void *self);
+		void decode_loop();
 		void start_wifi();
 		void run();
 		void stream_once();
@@ -49,7 +51,16 @@ namespace camera
 		void handle_jpeg(const std::uint8_t *jpeg, std::size_t length);
 
 		FrameHandler handler;
-		std::uint8_t *jpegBuffer = nullptr;
+		// Three JPEG buffers: one being received, the newest complete one, one being decoded.
+		// Receiving (core 1) and decoding (core 0) run at the same time; old pictures are dropped.
+		std::uint8_t *jpegBuffers[3] = { nullptr, nullptr, nullptr };
+		std::size_t jpegLengths[3] = { 0, 0, 0 };
+		int fillingIndex = 0;  // receive task only
+		int readyIndex = 1;    // shared, guarded by bufferLock
+		int decodingIndex = 2; // decode task only
+		bool readyIsNew = false;
+		void *bufferLock = nullptr; // portMUX_TYPE
+		void *decodeTask = nullptr;
 		std::uint16_t *pixels[2] = { nullptr, nullptr };
 		int backBuffer = 0;
 

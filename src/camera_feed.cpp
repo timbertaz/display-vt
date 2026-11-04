@@ -19,6 +19,7 @@
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
+#include <utility>
 #include <unistd.h>
 
 namespace camera
@@ -89,23 +90,31 @@ namespace camera
 		handler = std::move(onFrame);
 
 		// Big buffers in PSRAM: the incoming JPEG and two pictures (one shown, one being decoded)
-		jpegBuffer = static_cast<std::uint8_t *>(heap_caps_malloc(JPEG_CAPACITY, MALLOC_CAP_SPIRAM));
+		for (auto &buffer : jpegBuffers)
+		{
+			buffer = static_cast<std::uint8_t *>(heap_caps_malloc(JPEG_CAPACITY, MALLOC_CAP_SPIRAM));
+		}
+		static portMUX_TYPE lock = portMUX_INITIALIZER_UNLOCKED;
+		bufferLock = &lock;
 		const std::size_t pictureBytes = MAX_WIDTH * MAX_HEIGHT * sizeof(std::uint16_t);
 		for (auto &picture : pixels)
 		{
 			picture = static_cast<std::uint16_t *>(heap_caps_aligned_alloc(16, pictureBytes, MALLOC_CAP_SPIRAM)); // decoder wants 16-byte alignment
 		}
-		if ((nullptr == jpegBuffer) || (nullptr == pixels[0]) || (nullptr == pixels[1]))
+		if ((nullptr == jpegBuffers[0]) || (nullptr == jpegBuffers[1]) || (nullptr == jpegBuffers[2]) || (nullptr == pixels[0]) || (nullptr == pixels[1]))
 		{
 			ESP_LOGE(TAG, "Not enough PSRAM for the camera picture");
 			return false;
 		}
 
 		// WiFi is started from core 1: drivers take their interrupt from the core that starts
-		// them, and core 0 has none to spare. The stream runs on core 0 next to the CAN loop
-		// (core 1 already draws the screen).
-		return (pdPASS == xTaskCreatePinnedToCore(wifi_task_entry, "cam_wifi", 4096, this, 3, nullptr, 1)) &&
-		  (pdPASS == xTaskCreatePinnedToCore(feed_task_entry, "camera", 6144, this, 1, nullptr, 0));
+		// them, and core 0 has none to spare. Receiving runs on core 1 next to the network stack,
+		// decoding on core 0 next to the CAN loop, so both happen at the same time.
+		TaskHandle_t decoder = nullptr;
+		bool ok = (pdPASS == xTaskCreatePinnedToCore(decode_task_entry, "cam_decode", 6144, this, 1, &decoder, 0));
+		decodeTask = decoder;
+		return ok && (pdPASS == xTaskCreatePinnedToCore(wifi_task_entry, "cam_wifi", 4096, this, 3, nullptr, 1)) &&
+		  (pdPASS == xTaskCreatePinnedToCore(feed_task_entry, "camera", 6144, this, 2, nullptr, 1));
 	}
 
 	void Feed::request_led(bool on)
@@ -252,9 +261,20 @@ namespace camera
 		}
 		ESP_LOGI(TAG, "Stream started");
 
-		mjpeg::StreamParser parser(jpegBuffer, JPEG_CAPACITY, [this](const std::uint8_t *jpeg, std::size_t length) {
-			handle_jpeg(jpeg, length);
+		mjpeg::StreamParser *parserRef = nullptr;
+		mjpeg::StreamParser parser(jpegBuffers[fillingIndex], JPEG_CAPACITY, [this, &parserRef](const std::uint8_t *, std::size_t length) {
+			// Complete picture: make it the newest one and receive the next into a free buffer
+			jpegLengths[fillingIndex] = length;
+			auto *lock = static_cast<portMUX_TYPE *>(bufferLock);
+			taskENTER_CRITICAL(lock);
+			std::swap(fillingIndex, readyIndex);
+			readyIsNew = true;
+			taskEXIT_CRITICAL(lock);
+			parserRef->set_buffer(jpegBuffers[fillingIndex]);
+			lastFrameMs = now_ms();
+			xTaskNotifyGive(static_cast<TaskHandle_t>(decodeTask));
 		});
+		parserRef = &parser;
 		lastFrameMs = now_ms();
 		timingStartMs = 0;
 		decodeUs = 0;
@@ -300,6 +320,33 @@ namespace camera
 		close(sock);
 		fpsTimes10 = 0;
 		ESP_LOGI(TAG, "Stream stopped");
+	}
+
+	void Feed::decode_task_entry(void *self)
+	{
+		static_cast<Feed *>(self)->decode_loop();
+	}
+
+	void Feed::decode_loop()
+	{
+		auto *lock = static_cast<portMUX_TYPE *>(bufferLock);
+		while (true)
+		{
+			ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(500));
+			bool fresh = false;
+			taskENTER_CRITICAL(lock);
+			if (readyIsNew)
+			{
+				std::swap(readyIndex, decodingIndex);
+				readyIsNew = false;
+				fresh = true;
+			}
+			taskEXIT_CRITICAL(lock);
+			if (fresh)
+			{
+				handle_jpeg(jpegBuffers[decodingIndex], jpegLengths[decodingIndex]);
+			}
+		}
 	}
 
 	void Feed::handle_jpeg(const std::uint8_t *jpeg, std::size_t length)
@@ -369,7 +416,6 @@ namespace camera
 			timedFrames = 0;
 			timingStartMs = now;
 		}
-		lastFrameMs = now;
 		currentState = State::Streaming;
 		fpsWindowFrames++;
 		if (now - fpsWindowStartMs >= 1000)
