@@ -29,13 +29,12 @@ namespace camera
 		// ---- Must match camera-node/src/main.cpp ----
 		constexpr char WIFI_SSID[] = "HESAB-CAM";
 		constexpr char WIFI_PASSWORD[] = "hesabcam1";
-		constexpr int WIFI_CHANNEL = 6;
 		constexpr char CAMERA_IP[] = "192.168.4.1";
 		constexpr int CONTROL_PORT = 80;
 		constexpr int STREAM_PORT = 81;
 
 		constexpr std::size_t JPEG_CAPACITY = 200 * 1024; // VGA at quality 12 is usually 20-60 KB
-		constexpr std::uint32_t NO_PICTURE_TIMEOUT_MS = 3000;
+		constexpr std::uint32_t NO_PICTURE_TIMEOUT_MS = 8000; // patient: a slow picture beats reconnecting
 
 		std::uint32_t now_ms()
 		{
@@ -154,7 +153,7 @@ namespace camera
 		wifi_config_t config = {};
 		std::memcpy(config.sta.ssid, WIFI_SSID, sizeof(WIFI_SSID) - 1);
 		std::memcpy(config.sta.password, WIFI_PASSWORD, sizeof(WIFI_PASSWORD) - 1);
-		config.sta.channel = WIFI_CHANNEL; // look there first: joins faster
+		// No channel given: the camera picks the quietest one at start-up, so search them all
 		config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
 
 		esp_wifi_set_mode(WIFI_MODE_STA);
