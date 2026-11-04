@@ -223,9 +223,7 @@ namespace camera
 			int led = ledWanted.exchange(-1);
 			if (led >= 0)
 			{
-				char path[16];
-				std::snprintf(path, sizeof(path), "/led?on=%d", led);
-				if (!http_get(path))
+				if (!http_get((1 == led) ? "/led?on=1" : "/led?on=0"))
 				{
 					int none = -1;
 					ledWanted.compare_exchange_strong(none, led); // try again, unless pressed again meanwhile
@@ -292,9 +290,7 @@ namespace camera
 			int led = ledWanted.exchange(-1);
 			if (led >= 0)
 			{
-				char path[16];
-				std::snprintf(path, sizeof(path), "/led?on=%d", led);
-				http_get(path);
+				http_get((1 == led) ? "/led?on=1" : "/led?on=0");
 			}
 		}
 		close(sock);
