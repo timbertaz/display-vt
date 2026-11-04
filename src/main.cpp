@@ -449,8 +449,20 @@ extern "C" void app_main()
 	if (nullptr != screenUi)
 	{
 		ui::Ui *cameraPage = screenUi.get();
-		cameraFeed.start([cameraPage](const std::uint16_t *pixels, int width, int height) {
-			cameraPage->show_camera_frame(pixels, width, height);
+		cameraFeed.start([cameraPage](std::uint16_t *pixels, int width, int height) {
+			// Runs with the LVGL lock held, so the tab can't change halfway
+			if (!cameraPage->camera_visible())
+			{
+				return;
+			}
+			if (cameraPage->guides_shown())
+			{
+				ui::Ui::draw_guides(pixels, width, height);
+			}
+			int x = ui::Ui::VIDEO_X + (ui::Ui::VIDEO_WIDTH - width) / 2;
+			int y = ui::Ui::VIDEO_Y + (ui::Ui::VIDEO_HEIGHT - height) / 2;
+			board::draw_pixels(x, y, x + width, y + height, pixels);
+			cameraPage->camera_frame_shown();
 		});
 	}
 

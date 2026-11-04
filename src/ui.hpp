@@ -88,8 +88,16 @@ namespace ui
 		// Speed in the tab rail. gpsConnected = NMEA data arriving, fix = receiver has a position.
 		void set_speed(bool gpsConnected, bool fix, float speedKmh, int satellites);
 
-		// Camera page. show_camera_frame keeps a pointer to pixels (RGB565) until the next call.
-		void show_camera_frame(const std::uint16_t *pixels, int width, int height);
+		// Camera page. The picture itself is drawn straight to the screen (board::draw_pixels) into
+		// this area; LVGL only draws the black box, the placeholder and the side buttons.
+		static constexpr int VIDEO_X = RAIL_WIDTH; // screen coordinates
+		static constexpr int VIDEO_Y = 0;
+		static constexpr int VIDEO_WIDTH = 640;
+		static constexpr int VIDEO_HEIGHT = 480;
+		bool camera_visible() const { return Tab::Camera == currentTab; }
+		bool guides_shown() const { return guidesShown; }
+		void camera_frame_shown(); // first picture: hides the placeholder
+		static void draw_guides(std::uint16_t *pixels, int width, int height); // reversing lines into a picture
 		void set_camera_state(CameraState state, float fps);
 		void set_camera_led(bool on); // what the camera reports
 		void set_camera_led_handler(std::function<void(bool wantOn)> handler) { onCameraLed = std::move(handler); }
@@ -149,15 +157,12 @@ namespace ui
 
 		// Camera page
 		std::function<void(bool)> onCameraLed;
-		lv_img_dsc_t videoDsc{};
-		lv_obj_t *videoImg = nullptr;
 		lv_obj_t *videoPlaceholder = nullptr;
 		lv_obj_t *placeholderTitle = nullptr;
 		lv_obj_t *placeholderText = nullptr;
-		lv_obj_t *cameraChip = nullptr;
 		lv_obj_t *cameraChipDot = nullptr;
 		lv_obj_t *cameraChipText = nullptr;
-		lv_obj_t *guideLines = nullptr;
+		lv_obj_t *cameraFpsText = nullptr;
 		lv_obj_t *ledButton = nullptr;
 		lv_obj_t *linesButton = nullptr;
 		bool cameraLedOn = false;

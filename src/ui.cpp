@@ -2,6 +2,9 @@
 
 #include "assets/assets.h"
 
+#include <algorithm>
+#include <cstdlib>
+
 namespace ui
 {
 	namespace
@@ -518,17 +521,11 @@ namespace ui
 
 	void Ui::build_camera_page(lv_obj_t *page)
 	{
-		// ---- the picture (full page height, 640 wide) ----
+		// ---- picture area: LVGL only paints it black; the picture is drawn straight to the screen ----
 		lv_obj_t *video = plain_box(page);
 		lv_obj_set_size(video, VIDEO_W, VIDEO_H);
-		lv_obj_set_style_bg_color(video, lv_color_hex(0x0C0C0C), 0);
+		lv_obj_set_style_bg_color(video, lv_color_hex(0x000000), 0);
 		lv_obj_set_style_bg_opa(video, LV_OPA_COVER, 0);
-		lv_obj_set_style_clip_corner(video, false, 0);
-
-		videoImg = lv_img_create(video);
-		lv_obj_clear_flag(videoImg, LV_OBJ_FLAG_CLICKABLE);
-		lv_obj_add_flag(videoImg, LV_OBJ_FLAG_HIDDEN);
-		lv_obj_center(videoImg);
 
 		videoPlaceholder = plain_box(video);
 		lv_obj_set_size(videoPlaceholder, VIDEO_W, 220);
@@ -540,43 +537,7 @@ namespace ui
 		placeholderText = text(videoPlaceholder, "Looking for the camera's WiFi (HESAB-CAM)", &lv_font_montserrat_14, colour::TEXT_DIM);
 		lv_obj_align(placeholderText, LV_ALIGN_TOP_MID, 0, 150);
 
-		// ---- guide lines (drawn over the picture) ----
-		guideLines = plain_box(video);
-		lv_obj_set_size(guideLines, VIDEO_W, VIDEO_H);
-		for (int pass = 0; pass < 2; pass++) // dark outline first, then the colour on top
-		{
-			for (int i = 0; i < 6; i++)
-			{
-				lv_obj_t *line = lv_line_create(guideLines);
-				lv_line_set_points(line, GUIDES[i], 3);
-				lv_obj_set_style_line_width(line, (0 == pass) ? 9 : 5, 0);
-				lv_obj_set_style_line_rounded(line, true, 0);
-				lv_obj_set_style_line_color(line, lv_color_hex((0 == pass) ? 0x000000 : GUIDE_COLOURS[i / 2]), 0);
-				lv_obj_set_style_line_opa(line, (0 == pass) ? LV_OPA_50 : LV_OPA_COVER, 0);
-				lv_obj_clear_flag(line, LV_OBJ_FLAG_CLICKABLE);
-			}
-		}
-		lv_obj_add_flag(guideLines, LV_OBJ_FLAG_HIDDEN); // only with a picture
-
-		// ---- status chip, top left of the picture ----
-		cameraChip = plain_box(video);
-		lv_obj_set_pos(cameraChip, 12, 12);
-		lv_obj_set_size(cameraChip, LV_SIZE_CONTENT, 30);
-		lv_obj_set_style_pad_left(cameraChip, 30, 0);
-		lv_obj_set_style_pad_right(cameraChip, 12, 0);
-		lv_obj_set_style_radius(cameraChip, 15, 0);
-		lv_obj_set_style_bg_color(cameraChip, lv_color_hex(0x000000), 0);
-		lv_obj_set_style_bg_opa(cameraChip, LV_OPA_60, 0);
-		cameraChipDot = plain_box(cameraChip);
-		lv_obj_set_size(cameraChipDot, 10, 10);
-		lv_obj_set_style_radius(cameraChipDot, LV_RADIUS_CIRCLE, 0);
-		lv_obj_set_style_bg_opa(cameraChipDot, LV_OPA_COVER, 0);
-		lv_obj_align(cameraChipDot, LV_ALIGN_LEFT_MID, -18, 0);
-		cameraChipText = text(cameraChip, "NO CAMERA", &lv_font_montserrat_12, colour::TEXT);
-		lv_obj_set_style_text_letter_space(cameraChipText, 1, 0);
-		lv_obj_align(cameraChipText, LV_ALIGN_LEFT_MID, 0, 0);
-
-		// ---- side buttons: camera LEDs, guide lines ----
+		// ---- side column: camera LEDs, guide lines, status ----
 		lv_obj_t *side = plain_box(page);
 		lv_obj_set_pos(side, VIDEO_W, 0);
 		lv_obj_set_size(side, PAGE_WIDTH - VIDEO_W, PAGE_HEIGHT);
@@ -598,29 +559,70 @@ namespace ui
 		}
 		style_side_button(linesButton, guidesShown);
 
+		cameraChipDot = plain_box(side);
+		lv_obj_set_size(cameraChipDot, 12, 12);
+		lv_obj_set_style_radius(cameraChipDot, LV_RADIUS_CIRCLE, 0);
+		lv_obj_set_style_bg_opa(cameraChipDot, LV_OPA_COVER, 0);
+		lv_obj_align(cameraChipDot, LV_ALIGN_BOTTOM_MID, 0, -64);
+		cameraChipText = text(side, "NO CAM", &lv_font_montserrat_12, colour::TEXT);
+		lv_obj_set_style_text_letter_space(cameraChipText, 1, 0);
+		lv_obj_align(cameraChipText, LV_ALIGN_BOTTOM_MID, 0, -40);
+		cameraFpsText = text(side, "", &lv_font_montserrat_12, colour::TEXT_DIM);
+		lv_obj_align(cameraFpsText, LV_ALIGN_BOTTOM_MID, 0, -20);
+
 		set_camera_state(CameraState::NoWifi, 0.0f);
 	}
 
-	void Ui::show_camera_frame(const std::uint16_t *pixels, int width, int height)
+	void Ui::camera_frame_shown()
 	{
-		videoDsc.header.always_zero = 0;
-		videoDsc.header.cf = LV_IMG_CF_TRUE_COLOR;
-		videoDsc.header.w = static_cast<std::uint32_t>(width);
-		videoDsc.header.h = static_cast<std::uint32_t>(height);
-		videoDsc.data_size = static_cast<std::uint32_t>(width * height * 2);
-		videoDsc.data = reinterpret_cast<const std::uint8_t *>(pixels);
-		lv_img_cache_invalidate_src(&videoDsc); // same descriptor, new pixels
-		lv_img_set_src(videoImg, &videoDsc);
-		lv_obj_center(videoImg);
-
 		if (!haveFrame)
 		{
 			haveFrame = true;
-			lv_obj_clear_flag(videoImg, LV_OBJ_FLAG_HIDDEN);
 			lv_obj_add_flag(videoPlaceholder, LV_OBJ_FLAG_HIDDEN);
-			if (guidesShown)
+		}
+	}
+
+	void Ui::draw_guides(std::uint16_t *pixels, int width, int height)
+	{
+		// Thick line by stamping squares along it (only ~600 points per picture)
+		auto stamp = [&](int cx, int cy, int half, std::uint16_t colour) {
+			for (int y = cy - half; y <= cy + half; y++)
 			{
-				lv_obj_clear_flag(guideLines, LV_OBJ_FLAG_HIDDEN);
+				if ((y < 0) || (y >= height))
+				{
+					continue;
+				}
+				std::uint16_t *row = pixels + y * width;
+				for (int x = cx - half; x <= cx + half; x++)
+				{
+					if ((x >= 0) && (x < width))
+					{
+						row[x] = colour;
+					}
+				}
+			}
+		};
+		auto rgb565 = [](std::uint32_t rgb) {
+			return static_cast<std::uint16_t>(((rgb >> 8) & 0xF800) | ((rgb >> 5) & 0x07E0) | ((rgb >> 3) & 0x001F));
+		};
+		for (int pass = 0; pass < 2; pass++) // dark edge first, colour on top
+		{
+			for (int i = 0; i < 6; i++)
+			{
+				std::uint16_t colour = (0 == pass) ? 0x0000 : rgb565(GUIDE_COLOURS[i / 2]);
+				int half = (0 == pass) ? 4 : 2;
+				for (int segment = 0; segment < 2; segment++)
+				{
+					const lv_point_t &a = GUIDES[i][segment];
+					const lv_point_t &b = GUIDES[i][segment + 1];
+					int steps = std::max(std::abs(b.x - a.x), std::abs(b.y - a.y));
+					for (int step = 0; step <= steps; step++)
+					{
+						int x = a.x + (b.x - a.x) * step / std::max(steps, 1);
+						int y = a.y + (b.y - a.y) * step / std::max(steps, 1);
+						stamp(x * width / VIDEO_W, y * height / VIDEO_H, half, colour);
+					}
+				}
 			}
 		}
 	}
@@ -628,27 +630,29 @@ namespace ui
 	void Ui::set_camera_state(CameraState state, float fps)
 	{
 		std::uint32_t dot = colour::RED;
-		char chip[32] = "NO CAMERA";
+		const char *status = "NO CAM";
+		char rate[16] = "";
 		if (CameraState::Streaming == state)
 		{
 			dot = colour::GREEN;
-			lv_snprintf(chip, sizeof(chip), "LIVE  %d fps", static_cast<int>(fps + 0.5f));
+			status = "LIVE";
+			lv_snprintf(rate, sizeof(rate), "%d fps", static_cast<int>(fps + 0.5f));
 		}
 		else if (CameraState::Connecting == state)
 		{
 			dot = colour::YELLOW;
-			lv_snprintf(chip, sizeof(chip), "CONNECTING");
+			status = "WAIT";
 		}
 		lv_obj_set_style_bg_color(cameraChipDot, lv_color_hex(dot), 0);
-		lv_label_set_text(cameraChipText, chip);
+		lv_label_set_text(cameraChipText, status);
+		lv_label_set_text(cameraFpsText, rate);
 
 		if (CameraState::Streaming != state)
 		{
 			// Never leave a frozen picture on screen: it would look like a live view
 			haveFrame = false;
-			lv_obj_add_flag(videoImg, LV_OBJ_FLAG_HIDDEN);
-			lv_obj_add_flag(guideLines, LV_OBJ_FLAG_HIDDEN);
 			lv_obj_clear_flag(videoPlaceholder, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_invalidate(lv_obj_get_parent(videoPlaceholder)); // repaint the whole picture area black
 			bool noWifi = (CameraState::NoWifi == state);
 			lv_label_set_text(placeholderTitle, noWifi ? "No camera" : "Connecting...");
 			lv_label_set_text(placeholderText, noWifi ? "Looking for the camera's WiFi (HESAB-CAM)" : "Camera found, waiting for the picture");
@@ -673,15 +677,7 @@ namespace ui
 	void Ui::guide_lines_clicked(lv_event_t *e)
 	{
 		auto *self = static_cast<Ui *>(lv_event_get_user_data(e));
-		self->guidesShown = !self->guidesShown;
+		self->guidesShown = !self->guidesShown; // drawn into each picture
 		self->style_side_button(self->linesButton, self->guidesShown);
-		if (self->guidesShown && self->haveFrame)
-		{
-			lv_obj_clear_flag(self->guideLines, LV_OBJ_FLAG_HIDDEN);
-		}
-		else
-		{
-			lv_obj_add_flag(self->guideLines, LV_OBJ_FLAG_HIDDEN);
-		}
 	}
 }

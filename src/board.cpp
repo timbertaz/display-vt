@@ -299,6 +299,14 @@ namespace board
 		xSemaphoreGiveRecursive(lvglMutex);
 	}
 
+	void draw_pixels(int x1, int y1, int x2, int y2, const void *pixels)
+	{
+		if (nullptr != panel)
+		{
+			esp_lcd_panel_draw_bitmap(panel, x1, y1, x2, y2, pixels);
+		}
+	}
+
 	bool touch_available()
 	{
 		return 0 != gt911Address;

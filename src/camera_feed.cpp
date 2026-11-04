@@ -8,6 +8,7 @@
 #include "esp_jpeg_dec.h"
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "esp_timer.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -255,6 +256,10 @@ namespace camera
 			handle_jpeg(jpeg, length);
 		});
 		lastFrameMs = now_ms();
+		timingStartMs = 0;
+		decodeUs = 0;
+		showUs = 0;
+		timedFrames = 0;
 		fpsWindowStartMs = lastFrameMs;
 		fpsWindowFrames = 0;
 		static std::uint8_t buffer[4096];
@@ -299,6 +304,7 @@ namespace camera
 
 	void Feed::handle_jpeg(const std::uint8_t *jpeg, std::size_t length)
 	{
+		std::int64_t decodeStart = esp_timer_get_time();
 		jpeg_dec_config_t config = DEFAULT_JPEG_DEC_CONFIG();
 		config.output_type = JPEG_PIXEL_FORMAT_RGB565_LE; // LVGL's 16-bit colour, no byte swap
 
@@ -332,7 +338,8 @@ namespace camera
 			return;
 		}
 
-		// Show it: the UI now points at this buffer; the next picture goes into the other one
+		// Show it (straight to the screen, see main.cpp)
+		std::int64_t showStart = esp_timer_get_time();
 		if (board::lvgl_lock(100))
 		{
 			if (handler)
@@ -342,8 +349,26 @@ namespace camera
 			board::lvgl_unlock();
 			backBuffer ^= 1;
 		}
+		std::int64_t showEnd = esp_timer_get_time();
+		decodeUs += static_cast<std::uint64_t>(showStart - decodeStart);
+		showUs += static_cast<std::uint64_t>(showEnd - showStart);
+		timedFrames++;
 
 		std::uint32_t now = now_ms();
+		if (0 == timingStartMs)
+		{
+			timingStartMs = now;
+		}
+		else if (now - timingStartMs >= 5000)
+		{
+			ESP_LOGI(TAG, "Display: %.1f pictures/s | decode %lu ms, draw %lu ms per picture",
+			         timedFrames * 1000.0f / (now - timingStartMs), static_cast<unsigned long>(decodeUs / 1000 / timedFrames),
+			         static_cast<unsigned long>(showUs / 1000 / timedFrames));
+			decodeUs = 0;
+			showUs = 0;
+			timedFrames = 0;
+			timingStartMs = now;
+		}
 		lastFrameMs = now;
 		currentState = State::Streaming;
 		fpsWindowFrames++;

@@ -24,8 +24,8 @@ namespace camera
 		static constexpr int MAX_WIDTH = 640;
 		static constexpr int MAX_HEIGHT = 480;
 
-		// Called from the feed task WITH the LVGL lock held. pixels stay valid until the next call.
-		using FrameHandler = std::function<void(const std::uint16_t *pixels, int width, int height)>;
+		// Called from the feed task WITH the LVGL lock held, for every decoded picture (RGB565).
+		using FrameHandler = std::function<void(std::uint16_t *pixels, int width, int height)>;
 
 		bool start(FrameHandler onFrame);
 
@@ -63,6 +63,11 @@ namespace camera
 		std::uint32_t lastFrameMs = 0;
 		std::uint32_t fpsWindowStartMs = 0;
 		std::uint32_t fpsWindowFrames = 0;
+		// Where the display's time goes (logged every 5 s while streaming)
+		std::uint64_t decodeUs = 0;
+		std::uint64_t showUs = 0;
+		std::uint32_t timedFrames = 0;
+		std::uint32_t timingStartMs = 0;
 		bool wifiLostLogged = false;
 
 		static void on_wifi_event(void *self, const char *base, std::int32_t id, void *data);
