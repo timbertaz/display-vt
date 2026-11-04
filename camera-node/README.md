@@ -9,19 +9,22 @@ and shows the picture on the Camera tab. A phone can join it too, for testing.
 
 Keep the wires short (10 cm or less) if you can: PCLK and XCLK are fast signals.
 
+Names as printed on the camera board (its data pins are D2-D9: the sensor's two lowest bits aren't brought out).
+
 | Camera board | DevKitC | | Camera board | DevKitC |
 |---|---|---|---|---|
-| 3.3V | 3V3 | | D0 | GPIO11 |
-| GND | GND | | D1 | GPIO9 |
-| SIOC | GPIO5 | | D2 | GPIO8 |
-| SIOD | GPIO4 | | D3 | GPIO10 |
-| VSYNC | GPIO6 | | D4 | GPIO12 |
-| HREF | GPIO7 | | D5 | GPIO18 |
-| PCLK | GPIO13 | | D6 | GPIO17 |
-| XCLK | GPIO15 | | D7 | GPIO16 |
+| 3.3V | 3V3 | | D2 | GPIO11 |
+| GND | GND | | D3 | GPIO9 |
+| SIOC | GPIO5 | | D4 | GPIO8 |
+| SIOD | GPIO4 | | D5 | GPIO10 |
+| VSYNC | GPIO6 | | D6 | GPIO12 |
+| HREF | GPIO7 | | D7 | GPIO18 |
+| PCLK | GPIO13 | | D8 | GPIO17 |
+| XCLK | GPIO15 | | D9 | GPIO16 |
 | PWDN | GPIO1 | | RST | GPIO2 |
 
 Everything except PWDN and RST is on the DevKitC's left pin row (the side with 3V3 at the top).
+Skip GPIO3 and GPIO46 on that row.
 PWDN and RST are on the right row, next to TX/RX.
 
 Don't use GPIO35, 36 or 37: on the N16R8 they belong to the PSRAM.

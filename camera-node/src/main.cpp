@@ -9,9 +9,9 @@
 //
 // The OV5640 makes the JPEG itself, so the ESP32 only moves bytes from the camera to WiFi.
 //
-// Wiring (camera board pin -> DevKitC GPIO), see README.md:
+// Wiring (names as printed on the camera board, which calls its data pins D2-D9) -> DevKitC GPIO:
 //   3.3V -> 3V3, GND -> GND, SIOD -> 4, SIOC -> 5, VSYNC -> 6, HREF -> 7, PCLK -> 13, XCLK -> 15,
-//   D7 -> 16, D6 -> 17, D5 -> 18, D4 -> 12, D3 -> 10, D2 -> 8, D1 -> 9, D0 -> 11,
+//   D9 -> 16, D8 -> 17, D7 -> 18, D6 -> 12, D5 -> 10, D4 -> 8, D3 -> 9, D2 -> 11,
 //   PWDN -> 1, RST -> 2
 
 #include "esp_camera.h"
@@ -47,7 +47,8 @@ namespace
 	constexpr char WIFI_PASSWORD[] = "hesabcam1"; // WPA2 needs at least 8 characters
 	constexpr int WIFI_CHANNEL = 6;
 
-	// ---- Camera board pins on the DevKitC (same layout as Espressif's ESP32-S3-EYE) ----
+	// ---- Camera pins on the DevKitC (same layout as Espressif's ESP32-S3-EYE) ----
+	// PIN_D0..D7 here = the camera board's D2..D9 labels
 	constexpr int PIN_PWDN = 1;
 	constexpr int PIN_RESET = 2;
 	constexpr int PIN_XCLK = 15;
