@@ -54,6 +54,10 @@ public:
 	// Update only the texts of numbers and strings (cheap, safe while a key is held)
 	void refresh_values();
 
+	// True when the implement changed something only a full redraw can show (hidden containers,
+	// object pointers, positions, sizes). Values and colours are handled by refresh_values().
+	bool structure_changed() const { return structure_signature() != renderedSignature; }
+
 	// Text in the middle of the mask area when nothing is shown (e.g. "Waiting for implement")
 	void set_waiting_text(const std::string &text);
 
@@ -81,6 +85,14 @@ private:
 		std::shared_ptr<isobus::VTObject> object;
 	};
 
+	// Objects whose colours or fill level the implement may change while the mask is shown
+	struct TrackedShape
+	{
+		lv_obj_t *box;
+		lv_obj_t *fill; // bar graphs: the coloured part
+		std::shared_ptr<isobus::VTObject> object;
+	};
+
 	struct CachedImage
 	{
 		std::vector<std::uint8_t> pixels;
@@ -101,6 +113,13 @@ private:
 	void render_text(lv_obj_t *parent, std::shared_ptr<isobus::VTObject> object, lv_coord_t x, lv_coord_t y);
 	void render_button(lv_obj_t *parent, std::shared_ptr<isobus::VTObject> object, lv_coord_t x, lv_coord_t y, int depth);
 	void render_picture(lv_obj_t *parent, std::shared_ptr<isobus::VTObject> object, lv_coord_t x, lv_coord_t y);
+	void render_linear_bar(lv_obj_t *parent, std::shared_ptr<isobus::VTObject> object, lv_coord_t x, lv_coord_t y);
+
+	void style_rectangle(lv_obj_t *box, std::shared_ptr<isobus::VTObject> object);
+	void style_button(lv_obj_t *box, std::shared_ptr<isobus::VTObject> object);
+	void update_linear_bar(const TrackedShape &bar);
+	std::uint32_t structure_signature() const;
+	void add_to_signature(std::uint32_t &hash, std::shared_ptr<isobus::VTObject> object, int depth) const;
 
 	std::string text_for(std::shared_ptr<isobus::VTObject> object) const;
 	const lv_img_dsc_t *image_for(std::shared_ptr<isobus::VTObject> picture);
@@ -119,6 +138,8 @@ private:
 
 	std::vector<std::unique_ptr<KeyInfo>> keyInfos;
 	std::vector<TrackedText> trackedTexts;
+	std::vector<TrackedShape> trackedShapes;
+	std::uint32_t renderedSignature = 0;
 	std::map<std::uint16_t, std::unique_ptr<CachedImage>> imageCache;
 	KeyInfo *heldKey = nullptr;
 };

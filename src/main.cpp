@@ -498,7 +498,6 @@ extern "C" void app_main()
 	std::uint32_t lastStatus = 0;
 	std::uint32_t lastLog = 0;
 	std::uint32_t lastServerUpdate = 0;
-	std::uint32_t lastRebuild = 0;
 	bool alarmWasShown = false;
 	std::uint32_t lastSpeedUpdate = 0;
 	int shownSpeedKey = -1;
@@ -508,7 +507,7 @@ extern "C" void app_main()
 	int shownRelayStates = -1; // -1 = nothing shown yet
 	bool shownRelaysOnline = false;
 	ui::IsobusState shownIsobusState = ui::IsobusState::NoImplement;
-	bool lazyRebuild = false; // a repaint may also have changed colours/positions; catch up within 1 s
+	bool lazyRebuild = false; // the implement changed the structure: redraw (after a held key is released)
 
 	while (true)
 	{
@@ -548,21 +547,22 @@ extern "C" void app_main()
 
 			if (repaintNeeded.exchange(false))
 			{
-				// The implement changed something. Numbers and strings update right away (cheap);
-				// anything else (colours, hidden containers, positions) is caught by a rebuild within 1 s.
+				// The implement changed something. Values, colours and bar levels update in place
+				// (cheap); hidden containers, swapped pointers, moved objects need a full redraw.
 				renderer->refresh_values();
-				lazyRebuild = true;
+				if (renderer->structure_changed())
+				{
+					lazyRebuild = true;
+				}
 			}
 
-			bool structureChanged = (active != shownWorkingSet) || (mask != shownMask) || poolChanged || rebuildNeeded ||
-			  (lazyRebuild && (now - lastRebuild >= 1000));
+			bool structureChanged = (active != shownWorkingSet) || (mask != shownMask) || poolChanged || rebuildNeeded || lazyRebuild;
 
 			if (structureChanged && !renderer->is_key_held())
 			{
 				// Full rebuild; waits while a key is held so the implement always gets the release
 				rebuildNeeded = false;
 				lazyRebuild = false;
-				lastRebuild = now;
 				shownWorkingSet = active;
 				shownMask = mask;
 				renderer->render(active, mask);

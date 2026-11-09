@@ -2,6 +2,7 @@
 
 #include "isobus/isobus/isobus_virtual_terminal_objects.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -174,6 +175,7 @@ void VtRenderer::render(std::shared_ptr<isobus::VirtualTerminalWorkingSetBase> n
 	lv_obj_clean(keyArea);
 	waitingLabel = nullptr;
 	trackedTexts.clear();
+	trackedShapes.clear();
 	keyInfos.clear();
 	heldKey = nullptr;
 
@@ -196,6 +198,81 @@ void VtRenderer::render(std::shared_ptr<isobus::VirtualTerminalWorkingSetBase> n
 
 	render_mask(mask);
 	render_soft_keys(mask);
+	renderedSignature = structure_signature();
+}
+
+// ------------------------------------------------------------------ what needs a full redraw
+
+void VtRenderer::add_to_signature(std::uint32_t &hash, std::shared_ptr<VTObject> object, int depth) const
+{
+	if ((nullptr == object) || (depth > MAX_DEPTH))
+	{
+		return;
+	}
+	auto mix = [&hash](std::uint32_t value) {
+		hash ^= value;
+		hash *= 16777619u; // FNV-1a
+	};
+	mix(object->get_id());
+	mix(static_cast<std::uint32_t>(object->get_object_type()));
+	mix(object->get_width());
+	mix(object->get_height());
+
+	switch (object->get_object_type())
+	{
+		case VirtualTerminalObjectType::Container:
+			mix(std::static_pointer_cast<isobus::Container>(object)->get_hidden() ? 1u : 0u);
+			break;
+		case VirtualTerminalObjectType::ObjectPointer:
+		{
+			std::uint16_t target = std::static_pointer_cast<isobus::ObjectPointer>(object)->get_value();
+			mix(target);
+			if (isobus::NULL_OBJECT_ID != target)
+			{
+				add_to_signature(hash, workingSet->get_object_by_id(target), depth + 1);
+			}
+			return;
+		}
+		case VirtualTerminalObjectType::Button:
+		{
+			auto button = std::static_pointer_cast<isobus::Button>(object);
+			mix(button->get_option(isobus::Button::Options::Disabled) ? 1u : 0u);
+			break;
+		}
+		default:
+			break;
+	}
+
+	for (std::uint16_t i = 0; i < object->get_number_children(); i++)
+	{
+		mix(static_cast<std::uint32_t>(object->get_child_x(i)) << 16 | static_cast<std::uint16_t>(object->get_child_y(i)));
+		add_to_signature(hash, workingSet->get_object_by_id(object->get_child_id(i)), depth + 1);
+	}
+}
+
+std::uint32_t VtRenderer::structure_signature() const
+{
+	std::uint32_t hash = 2166136261u;
+	if (nullptr == workingSet)
+	{
+		return hash;
+	}
+	auto mask = workingSet->get_object_by_id(activeMaskId);
+	add_to_signature(hash, mask, 0);
+	if (nullptr != mask)
+	{
+		std::uint16_t softKeyMaskId = isobus::NULL_OBJECT_ID;
+		if (auto dataMask = as<isobus::DataMask>(mask, VirtualTerminalObjectType::DataMask))
+		{
+			softKeyMaskId = dataMask->get_soft_key_mask();
+		}
+		else if (auto alarmMask = as<isobus::AlarmMask>(mask, VirtualTerminalObjectType::AlarmMask))
+		{
+			softKeyMaskId = alarmMask->get_soft_key_mask();
+		}
+		add_to_signature(hash, workingSet->get_object_by_id(softKeyMaskId), 0);
+	}
+	return hash;
 }
 
 void VtRenderer::render_mask(std::shared_ptr<VTObject> mask)
@@ -318,16 +395,26 @@ void VtRenderer::render_object(lv_obj_t *parent, std::shared_ptr<VTObject> objec
 			render_picture(parent, object, x, y);
 			break;
 
+		case VirtualTerminalObjectType::OutputLinearBarGraph:
+			render_linear_bar(parent, object, x, y);
+			break;
+
 		default:
-			// Not drawn yet: lines, polygons, meters, bar graphs, lists, input booleans...
+			// Not drawn yet: lines, polygons, meters, arched bar graphs, lists, input booleans...
 			break;
 	}
 }
 
 void VtRenderer::render_rectangle(lv_obj_t *parent, std::shared_ptr<VTObject> object, lv_coord_t x, lv_coord_t y)
 {
-	auto rect = std::static_pointer_cast<isobus::OutputRectangle>(object);
 	lv_obj_t *box = make_box(parent, x, y, object->get_width(), object->get_height());
+	style_rectangle(box, object);
+	trackedShapes.push_back({ box, nullptr, object });
+}
+
+void VtRenderer::style_rectangle(lv_obj_t *box, std::shared_ptr<VTObject> object)
+{
+	auto rect = std::static_pointer_cast<isobus::OutputRectangle>(object);
 
 	auto line = as<isobus::LineAttributes>(workingSet->get_object_by_id(rect->get_line_attributes()), VirtualTerminalObjectType::LineAttributes);
 	auto fill = as<isobus::FillAttributes>(workingSet->get_object_by_id(rect->get_fill_attributes()), VirtualTerminalObjectType::FillAttributes);
@@ -532,6 +619,30 @@ void VtRenderer::refresh_values()
 		{
 			lv_label_set_text(tracked.label, text.c_str());
 		}
+		// Background colour of the field (e.g. changed with Change Background Colour)
+		if (0 == lv_obj_get_style_bg_opa(lv_obj_get_parent(tracked.label), 0))
+		{
+			continue;
+		}
+		lv_obj_set_style_bg_color(lv_obj_get_parent(tracked.label), vt_colour(tracked.object->get_background_color()), 0);
+	}
+	// Colours and bar levels; LVGL only redraws what really changed
+	for (const auto &tracked : trackedShapes)
+	{
+		switch (tracked.object->get_object_type())
+		{
+			case VirtualTerminalObjectType::Button:
+				style_button(tracked.box, tracked.object);
+				break;
+			case VirtualTerminalObjectType::OutputRectangle:
+				style_rectangle(tracked.box, tracked.object);
+				break;
+			case VirtualTerminalObjectType::OutputLinearBarGraph:
+				update_linear_bar(tracked);
+				break;
+			default:
+				break;
+		}
 	}
 }
 
@@ -539,7 +650,24 @@ void VtRenderer::render_button(lv_obj_t *parent, std::shared_ptr<VTObject> objec
 {
 	auto button = std::static_pointer_cast<isobus::Button>(object);
 	lv_obj_t *box = make_box(parent, x, y, object->get_width(), object->get_height());
+	style_button(box, object);
+	trackedShapes.push_back({ box, nullptr, object });
 
+	render_children(box, object, depth);
+
+	if (button->get_option(isobus::Button::Options::Disabled))
+	{
+		lv_obj_set_style_opa(box, LV_OPA_50, 0);
+	}
+	else
+	{
+		make_pressable(box, false, object->get_id(), button->get_key_code());
+	}
+}
+
+void VtRenderer::style_button(lv_obj_t *box, std::shared_ptr<VTObject> object)
+{
+	auto button = std::static_pointer_cast<isobus::Button>(object);
 	if (!button->get_option(isobus::Button::Options::TransparentBackground))
 	{
 		lv_obj_set_style_bg_color(box, vt_colour(object->get_background_color()), 0);
@@ -554,16 +682,60 @@ void VtRenderer::render_button(lv_obj_t *parent, std::shared_ptr<VTObject> objec
 		lv_obj_set_style_border_width(box, 2, 0);
 		lv_obj_set_style_border_opa(box, LV_OPA_COVER, 0);
 	}
+}
 
-	render_children(box, object, depth);
-
-	if (button->get_option(isobus::Button::Options::Disabled))
+void VtRenderer::render_linear_bar(lv_obj_t *parent, std::shared_ptr<VTObject> object, lv_coord_t x, lv_coord_t y)
+{
+	auto bar = std::static_pointer_cast<isobus::OutputLinearBarGraph>(object);
+	lv_obj_t *box = make_box(parent, x, y, object->get_width(), object->get_height());
+	if (bar->get_option(isobus::OutputLinearBarGraph::Options::DrawBorder))
 	{
-		lv_obj_set_style_opa(box, LV_OPA_50, 0);
+		lv_obj_set_style_border_color(box, vt_colour(bar->get_colour()), 0);
+		lv_obj_set_style_border_width(box, 1, 0);
+		lv_obj_set_style_border_opa(box, LV_OPA_COVER, 0);
+	}
+	lv_obj_t *fill = make_box(box, 0, 0, 0, 0);
+	lv_obj_set_style_bg_opa(fill, LV_OPA_COVER, 0);
+	trackedShapes.push_back({ box, fill, object });
+	update_linear_bar(trackedShapes.back());
+}
+
+void VtRenderer::update_linear_bar(const TrackedShape &tracked)
+{
+	auto bar = std::static_pointer_cast<isobus::OutputLinearBarGraph>(tracked.object);
+	std::uint32_t value = bar->get_value();
+	if (isobus::NULL_OBJECT_ID != bar->get_variable_reference())
+	{
+		auto variable = as<isobus::NumberVariable>(workingSet->get_object_by_id(bar->get_variable_reference()), VirtualTerminalObjectType::NumberVariable);
+		if (nullptr != variable)
+		{
+			value = variable->get_value();
+		}
+	}
+	const std::int32_t minimum = bar->get_min_value();
+	const std::int32_t maximum = bar->get_max_value();
+	float fraction = (maximum > minimum) ? (static_cast<float>(static_cast<std::int32_t>(value) - minimum) / (maximum - minimum)) : 0.0f;
+	fraction = std::max(0.0f, std::min(1.0f, fraction));
+
+	const bool border = bar->get_option(isobus::OutputLinearBarGraph::Options::DrawBorder);
+	const lv_coord_t inset = border ? 2 : 0;
+	const lv_coord_t innerW = std::max<lv_coord_t>(0, tracked.object->get_width() - 2 * inset);
+	const lv_coord_t innerH = std::max<lv_coord_t>(0, tracked.object->get_height() - 2 * inset);
+	const bool horizontal = bar->get_option(isobus::OutputLinearBarGraph::Options::AxisOrientation);
+	const bool growsPositive = bar->get_option(isobus::OutputLinearBarGraph::Options::Direction);
+
+	lv_obj_set_style_bg_color(tracked.fill, vt_colour(bar->get_colour()), 0);
+	if (horizontal)
+	{
+		lv_coord_t w = static_cast<lv_coord_t>(innerW * fraction + 0.5f);
+		lv_obj_set_size(tracked.fill, w, innerH);
+		lv_obj_set_pos(tracked.fill, growsPositive ? inset : inset + innerW - w, inset); // positive = grows to the right
 	}
 	else
 	{
-		make_pressable(box, false, object->get_id(), button->get_key_code());
+		lv_coord_t h = static_cast<lv_coord_t>(innerH * fraction + 0.5f);
+		lv_obj_set_size(tracked.fill, innerW, h);
+		lv_obj_set_pos(tracked.fill, inset, growsPositive ? inset + innerH - h : inset); // positive = grows upwards
 	}
 }
 
